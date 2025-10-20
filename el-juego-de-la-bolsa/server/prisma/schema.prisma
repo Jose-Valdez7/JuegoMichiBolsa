@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  PLAYER
+  ADMIN
+}
+
+enum TransactionType {
+  BUY
+  SELL
+}
+
+enum NewsType {
+  POSITIVE
+  NEGATIVE
+  SURPRISE
+}
+
+enum EventType {
+  BOOM
+  CRASH
+  SPLIT
+  REVERSE_SPLIT
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  name         String
+  email        String        @unique
+  password     String
+  role         Role          @default(PLAYER)
+  portfolio    Portfolio?
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+}
+
+model Company {
+  id           Int           @id @default(autoincrement())
+  name         String
+  symbol       String        @unique
+  sector       String
+  basePrice    Float
+  currentPrice Float
+  actionsTotal Int
+  createdAt    DateTime      @default(now())
+  transactions Transaction[]
+  rounds       RoundPrice[]
+  news         News[]        @relation("NewsCompanies")
+  positions    Position[]
+}
+
+model News {
+  id                 Int        @id @default(autoincrement())
+  title              String
+  type               NewsType
+  effect             String
+  affectedCompanies  Company[]  @relation("NewsCompanies")
+  roundId            Int?
+  round              Round?     @relation(fields: [roundId], references: [id])
+}
+
+model Transaction {
+  id            Int             @id @default(autoincrement())
+  userId        Int
+  companyId     Int
+  type          TransactionType
+  quantity      Int
+  priceAtMoment Float
+  createdAt     DateTime        @default(now())
+  user          User            @relation(fields: [userId], references: [id])
+  company       Company         @relation(fields: [companyId], references: [id])
+  roundId       Int?
+  round         Round?          @relation(fields: [roundId], references: [id])
+}
+
+model Portfolio {
+  id          Int        @id @default(autoincrement())
+  userId      Int        @unique
+  cashBalance Float      @default(10000)
+  totalValue  Float      @default(0)
+  user        User       @relation(fields: [userId], references: [id])
+  positions   Position[]
+}
+
+model Position {
+  id         Int       @id @default(autoincrement())
+  portfolio  Portfolio @relation(fields: [portfolioId], references: [id])
+  portfolioId Int
+  company    Company   @relation(fields: [companyId], references: [id])
+  companyId  Int
+  quantity   Int       @default(0)
+  @@unique([portfolioId, companyId])
+}
+
+model Game {
+  id           Int       @id @default(autoincrement())
+  code         String    @unique
+  createdAt    DateTime  @default(now())
+  rounds       Round[]
+  active       Boolean   @default(false)
+}
+
+model Round {
+  id           Int        @id @default(autoincrement())
+  gameId       Int
+  index        Int
+  startsAt     DateTime
+  endsAt       DateTime
+  game         Game       @relation(fields: [gameId], references: [id])
+  news         News[]
+  prices       RoundPrice[]
+  transactions Transaction[]
+  event        Event?
+  @@unique([gameId, index])
+}
+
+model RoundPrice {
+  id        Int     @id @default(autoincrement())
+  roundId   Int
+  companyId Int
+  price     Float
+  round     Round   @relation(fields: [roundId], references: [id])
+  company   Company @relation(fields: [companyId], references: [id])
+  @@unique([roundId, companyId])
+}
+
+model Event {
+  id        Int       @id @default(autoincrement())
+  type      EventType
+  payload   Json
+  roundId   Int       @unique
+  round     Round     @relation(fields: [roundId], references: [id])
+  createdAt DateTime  @default(now())
+}
