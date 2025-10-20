@@ -8,10 +8,11 @@ export function useSocket() {
 
   useEffect(() => {
     if (!token) return
-
+    
     const newSocket = io('http://localhost:3000', {
       auth: { token },
-      transports: ['websocket']
+      transports: ['websocket', 'polling'], // Agregar polling como fallback
+      withCredentials: true
     })
 
     newSocket.on('connect', () => {
@@ -25,7 +26,9 @@ export function useSocket() {
     setSocket(newSocket)
 
     return () => {
+      if (!window.location.pathname.includes('/game')) {
       newSocket.close()
+    }
     }
   }, [token])
 
