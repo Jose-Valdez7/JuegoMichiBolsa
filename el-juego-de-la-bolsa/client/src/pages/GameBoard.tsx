@@ -35,7 +35,7 @@ export default function GameBoard() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null)
   const [quantity, setQuantity] = useState(1)
-  const [roundTimer, setRoundTimer] = useState(0)
+  const [roundTimer, setRoundTimer] = useState(60)
   const [currentRound, setCurrentRound] = useState(1)
   const [gamePhase, setGamePhase] = useState<'playing' | 'news' | 'trading' | 'results'>('playing')
   const [isRoundActive, setIsRoundActive] = useState(true)
@@ -58,6 +58,7 @@ export default function GameBoard() {
   } = useNotifications()
 
   useEffect(() => {
+    console.log('GameBoard mounted, loading initial data...')
     fetchNews()
     loadCompanies()
     loadPortfolio()
@@ -65,7 +66,17 @@ export default function GameBoard() {
   }, [])
 
   useEffect(() => {
-    if (!socket) return
+    if (!socket) {
+      console.log('Socket not available yet')
+      return
+    }
+
+    console.log('Setting up socket listeners...')
+
+    // Debug: Escuchar todos los eventos del socket
+    socket.onAny((eventName, ...args) => {
+      console.log(`Socket event received: ${eventName}`, args)
+    })
 
     // Manejar inicio del juego desde la sala de espera
     socket.on('gameStarted', () => {
@@ -75,10 +86,24 @@ export default function GameBoard() {
       setIsRoundActive(true)
     })
 
+    socket.on('playersUpdate', (players: any[]) => {
+      console.log('Players update received:', players)
+    })
+
+    socket.on('gameStartCountdown', (seconds: number) => {
+      console.log('Game start countdown:', seconds)
+    })
+
+    // Unirse a la sala de espera si no está en una
+    console.log('Joining waiting room...')
+    socket.emit('joinWaitingRoom', { userId: 1, userName: 'Admin' }) // TODO: obtener del auth
+
     // Solicitar el estado actual de la ronda al entrar
+    console.log('Requesting round state...')
     socket.emit('requestRoundState')
 
     socket.on('roundState', (data: { status: string; round: number; timer: number; news: any; phase: 'news' | 'trading' | 'playing' }) => {
+      console.log('Received round state:', data)
       setCurrentRound(data.round || 1)
       setRoundTimer(data.timer || 0)
       setCurrentNews(data.news || [])
@@ -106,6 +131,7 @@ export default function GameBoard() {
     })
 
     socket.on('roundTimer', (seconds: number) => {
+      console.log('Received round timer:', seconds)
       setRoundTimer(seconds)
     })
 
@@ -190,12 +216,14 @@ export default function GameBoard() {
     })
 
     return () => {
+      console.log('Cleaning up socket listeners...')
       socket.off('priceUpdate')
       socket.off('roundTimer')
       socket.off('roundStarted')
       socket.off('roundEnded')
       socket.off('gameFinished')
       socket.off('roundState')
+      socket.off('gameStarted')
     }
   }, [socket, fetchNews, nav])
 
@@ -286,6 +314,11 @@ export default function GameBoard() {
   const handleShowHelp = () => {
     showSystemNotification('Panel de ayuda - Consulta las reglas del juego')
   }
+
+  // Debug: Mostrar estado del temporizador
+  useEffect(() => {
+    console.log('Timer state updated:', { roundTimer, currentRound, gamePhase })
+  }, [roundTimer, currentRound, gamePhase])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800">

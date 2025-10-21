@@ -16,7 +16,5 @@ COPY --from=base /app/package*.json ./
 COPY --from=base /app/node_modules ./node_modules
 COPY --from=base /app/dist ./dist
 COPY --from=base /app/prisma ./prisma
-COPY start.sh ./
-RUN chmod +x start.sh
 EXPOSE 3000
-CMD ["sh", "./start.sh"]
+CMD ["sh", "-c", "sleep 10 && npx prisma migrate deploy && npx prisma db seed && node dist/main.js"]
