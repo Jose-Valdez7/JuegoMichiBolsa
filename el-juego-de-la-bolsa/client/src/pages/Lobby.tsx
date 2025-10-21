@@ -3,13 +3,23 @@ import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { useSocket } from '../hooks/useSocket'
 
+const CHARACTERS = [
+  { id: 1, name: 'Ana', avatar: '👩‍💼', color: 'bg-pink-500' },
+  { id: 2, name: 'Carlos', avatar: '👨‍💻', color: 'bg-blue-500' },
+  { id: 3, name: 'María', avatar: '👩‍🔬', color: 'bg-green-500' },
+  { id: 4, name: 'Luis', avatar: '👨‍🎓', color: 'bg-purple-500' },
+  { id: 5, name: 'Sofia', avatar: '👩‍🚀', color: 'bg-orange-500' }
+]
+
 export default function Lobby() {
   const [gameMode, setGameMode] = useState<'create' | 'join' | null>(null)
   const [roomCode, setRoomCode] = useState('')
   const [playerName, setPlayerName] = useState('')
+  const [selectedCharacter, setSelectedCharacter] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
   const [generatedCode, setGeneratedCode] = useState('')
+  const [takenCharacters, setTakenCharacters] = useState<number[]>([])
   
   const socket = useSocket()
   const navigate = useNavigate()
@@ -33,11 +43,15 @@ export default function Lobby() {
     socket.on('playerJoined', (data: any) => {
       console.log('Player joined:', data)
       setError('')
+      
+      // Actualizar personajes tomados
+      const taken = data.players.map((p: any) => p.characterId).filter((id: number) => id !== undefined)
+      setTakenCharacters(taken)
     })
 
     socket.on('gameStartCountdown', (seconds: number) => {
       console.log('Game starting in:', seconds)
-      navigate('/waiting')
+      navigate('/game')
     })
 
     socket.on('gameStarted', () => {
@@ -60,6 +74,11 @@ export default function Lobby() {
       return
     }
 
+    if (selectedCharacter === null) {
+      setError('Por favor selecciona un personaje')
+      return
+    }
+
     setIsLoading(true)
     setError('')
 
@@ -70,7 +89,8 @@ export default function Lobby() {
       if (socket) {
         socket.emit('createRoom', { 
           playerName: playerName.trim(),
-          roomCode: code 
+          roomCode: code,
+          characterId: selectedCharacter
         })
         setGeneratedCode(code)
       }
@@ -87,6 +107,11 @@ export default function Lobby() {
       return
     }
 
+    if (selectedCharacter === null) {
+      setError('Por favor selecciona un personaje')
+      return
+    }
+
     setIsLoading(true)
     setError('')
 
@@ -94,7 +119,8 @@ export default function Lobby() {
       if (socket) {
         socket.emit('joinRoom', { 
           playerName: playerName.trim(),
-          roomCode: roomCode.trim().toUpperCase()
+          roomCode: roomCode.trim().toUpperCase(),
+          characterId: selectedCharacter
         })
       }
     } catch (err) {
@@ -113,8 +139,10 @@ export default function Lobby() {
     setGameMode(null)
     setRoomCode('')
     setPlayerName('')
+    setSelectedCharacter(null)
     setError('')
     setGeneratedCode('')
+    setTakenCharacters([])
   }
 
   return (
@@ -171,6 +199,41 @@ export default function Lobby() {
                 className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none"
                 maxLength={20}
               />
+            </div>
+
+            <div>
+              <label className="block text-white font-medium mb-3">Selecciona tu Personaje</label>
+              <div className="grid grid-cols-5 gap-2">
+                {CHARACTERS.map((character) => {
+                  const isTaken = takenCharacters.includes(character.id)
+                  const isSelected = selectedCharacter === character.id
+                  
+                  return (
+                    <motion.button
+                      key={character.id}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => !isTaken && setSelectedCharacter(character.id)}
+                      disabled={isTaken}
+                      className={`
+                        p-3 rounded-lg border-2 transition-all
+                        ${isSelected 
+                          ? 'border-blue-400 bg-blue-500/20' 
+                          : isTaken 
+                            ? 'border-red-400 bg-red-500/20 opacity-50 cursor-not-allowed'
+                            : 'border-slate-600 bg-slate-700 hover:border-blue-400 hover:bg-slate-600'
+                        }
+                      `}
+                    >
+                      <div className="text-2xl mb-1">{character.avatar}</div>
+                      <div className="text-xs text-white font-medium">{character.name}</div>
+                      {isTaken && (
+                        <div className="text-xs text-red-400 mt-1">Ocupado</div>
+                      )}
+                    </motion.button>
+                  )
+                })}
+              </div>
             </div>
 
             {generatedCode && (
@@ -243,6 +306,41 @@ export default function Lobby() {
                 className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none font-mono text-center text-lg"
                 maxLength={6}
               />
+            </div>
+
+            <div>
+              <label className="block text-white font-medium mb-3">Selecciona tu Personaje</label>
+              <div className="grid grid-cols-5 gap-2">
+                {CHARACTERS.map((character) => {
+                  const isTaken = takenCharacters.includes(character.id)
+                  const isSelected = selectedCharacter === character.id
+                  
+                  return (
+                    <motion.button
+                      key={character.id}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => !isTaken && setSelectedCharacter(character.id)}
+                      disabled={isTaken}
+                      className={`
+                        p-3 rounded-lg border-2 transition-all
+                        ${isSelected 
+                          ? 'border-blue-400 bg-blue-500/20' 
+                          : isTaken 
+                            ? 'border-red-400 bg-red-500/20 opacity-50 cursor-not-allowed'
+                            : 'border-slate-600 bg-slate-700 hover:border-blue-400 hover:bg-slate-600'
+                        }
+                      `}
+                    >
+                      <div className="text-2xl mb-1">{character.avatar}</div>
+                      <div className="text-xs text-white font-medium">{character.name}</div>
+                      {isTaken && (
+                        <div className="text-xs text-red-400 mt-1">Ocupado</div>
+                      )}
+                    </motion.button>
+                  )
+                })}
+              </div>
             </div>
 
             <motion.button

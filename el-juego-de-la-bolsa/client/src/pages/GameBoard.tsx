@@ -81,6 +81,7 @@ export default function GameBoard() {
     // Manejar inicio del juego desde la sala de espera
     socket.on('gameStarted', () => {
       console.log('Game started! Redirecting to game...')
+      console.log('Setting game phase to playing and round active to true')
       // El juego ya comenzó, mantener en GameBoard
       setGamePhase('playing')
       setIsRoundActive(true)
@@ -94,10 +95,20 @@ export default function GameBoard() {
       console.log('Game start countdown:', seconds)
     })
 
-    // Unirse a la sala de espera si no está en una
-    console.log('Joining waiting room...')
-    socket.emit('joinWaitingRoom', { userId: 1, userName: 'Admin' }) // TODO: obtener del auth
+    socket.on('roomStatus', (data: any) => {
+      console.log('Room status:', data)
+      if (!data.inRoom) {
+        console.log('Not in any room, redirecting to lobby')
+        navigate('/')
+      }
+    })
 
+    // El cliente ya debería estar en una sala desde el lobby
+    console.log('GameBoard mounted, socket connected')
+
+    // Verificar si estamos en una sala, si no, intentar unirse
+    socket.emit('checkRoomStatus')
+    
     // Solicitar el estado actual de la ronda al entrar
     console.log('Requesting round state...')
     socket.emit('requestRoundState')
@@ -262,32 +273,23 @@ export default function GameBoard() {
 
   const executeTransaction = async (type: 'BUY' | 'SELL', companyId: number, transactionQuantity: number) => {
     try {
-      const response = await api.post('/game/transaction', {
-        companyId,
-        type,
-        quantity: transactionQuantity
-      })
+      console.log('Attempting transaction:', { type, companyId, quantity: transactionQuantity })
       
-      if (response.status === 200) {
-        // Emitir transacción via Socket.IO para sincronización en tiempo real
-        if (socket) {
-          socket.emit('gameTransaction', {
-            userId: 1, // TODO: obtener del auth
-            companyId,
-            type,
-            quantity: transactionQuantity
-          })
-        }
-        
-        // Recargar portfolio
-        loadPortfolio()
-        
-        // Mostrar notificación de éxito
-        console.log(`${type} ejecutado: ${transactionQuantity} acciones de ${companies.find(c => c.id === companyId)?.symbol}`)
+      // Emitir transacción via Socket.IO para sincronización en tiempo real
+      if (socket) {
+        console.log('Socket available, emitting transaction')
+        socket.emit('gameTransaction', {
+          userId: 1, // TODO: obtener del auth
+          companyId,
+          type,
+          quantity: transactionQuantity
+        })
+      } else {
+        console.error('Socket not available for transaction')
+        alert('Error: No hay conexión con el servidor')
       }
     } catch (error) {
       console.error('Transaction error:', error)
-      // Mostrar notificación de error
       alert('Error al procesar la transacción')
     }
   }

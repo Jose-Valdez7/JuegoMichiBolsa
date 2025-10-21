@@ -25,8 +25,8 @@ export default function WaitingRoom() {
   useEffect(() => {
     if (!socket) return
 
-    // Unirse a la sala de espera
-    socket.emit('joinWaitingRoom', { userId: user?.id, userName: user?.name })
+    // El usuario ya debería estar en una sala desde el lobby
+    console.log('WaitingRoom mounted, user should already be in a room')
 
     // Escuchar eventos del socket
     socket.on('playersUpdate', (playersList: Player[]) => {

@@ -13,6 +13,7 @@ interface Player {
   name: string;
   socketId: string;
   isReady: boolean;
+  characterId?: number;
 }
 
 interface GameRoom {
@@ -79,23 +80,17 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   handleConnection(client: Socket) {
-  console.log(`Client connected: ${client.id}`);
-  // Verificar token si es necesario
-  const token = client.handshake.auth?.token;
-  if (!token) {
-    console.log('No token provided, disconnecting');
-    client.disconnect();
-    return;
+    console.log(`Client connected: ${client.id}`);
+    // Ya no verificamos tokens en el nuevo sistema
   }
-}
   handleDisconnect(client: Socket) {
     console.log(`Client disconnected: ${client.id}`);
     this.handlePlayerDisconnect(client);
   }
 
   @SubscribeMessage('createRoom')
-  handleCreateRoom(client: Socket, payload: { playerName: string; roomCode: string }) {
-    const { playerName, roomCode } = payload;
+  handleCreateRoom(client: Socket, payload: { playerName: string; roomCode: string; characterId?: number }) {
+    const { playerName, roomCode, characterId } = payload;
     
     // Verificar si el código ya existe
     if (this.roomCodes.has(roomCode)) {
@@ -122,7 +117,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       id: 1,
       name: playerName,
       socketId: client.id,
-      isReady: false
+      isReady: false,
+      characterId: characterId
     };
 
     room.players.push(player);
@@ -141,32 +137,50 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   @SubscribeMessage('joinRoom')
-  handleJoinRoom(client: Socket, payload: { playerName: string; roomCode: string }) {
-    const { playerName, roomCode } = payload;
+  handleJoinRoom(client: Socket, payload: { playerName: string; roomCode: string; characterId?: number }) {
+    const { playerName, roomCode, characterId } = payload;
+    
+    console.log(`Attempting to join room with code: ${roomCode}, player: ${playerName}, character: ${characterId}`);
     
     // Buscar sala por código
     const roomId = this.roomCodes.get(roomCode);
     if (!roomId) {
+      console.log(`Room code ${roomCode} not found in roomCodes map`);
       client.emit('roomError', { message: 'Código de sala no encontrado' });
       return;
     }
 
     const room = this.gameRooms.get(roomId);
     if (!room) {
+      console.log(`Room ${roomId} not found`);
       client.emit('roomError', { message: 'Sala no encontrada' });
       return;
     }
 
+    console.log(`Found room ${roomId}, status: ${room.status}, players: ${room.players.length}`);
+
     // Verificar si la sala está llena
     if (room.players.length >= 5) {
+      console.log(`Room ${roomId} is full`);
       client.emit('roomError', { message: 'La sala está llena' });
       return;
     }
 
     // Verificar si la sala ya está en juego
     if (room.status === 'playing' || room.status === 'finished') {
+      console.log(`Room ${roomId} is already playing`);
       client.emit('roomError', { message: 'La partida ya está en curso' });
       return;
+    }
+
+    // Verificar si el personaje ya está seleccionado
+    if (characterId !== undefined) {
+      const characterTaken = room.players.some(p => p.characterId === characterId);
+      if (characterTaken) {
+        console.log(`Character ${characterId} is already taken`);
+        client.emit('roomError', { message: 'Este personaje ya está seleccionado' });
+        return;
+      }
     }
 
     // Agregar jugador
@@ -174,7 +188,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       id: room.players.length + 1,
       name: playerName,
       socketId: client.id,
-      isReady: false
+      isReady: false,
+      characterId: characterId
     };
 
     room.players.push(player);
@@ -199,76 +214,82 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
   @SubscribeMessage('joinWaitingRoom')
   handleJoinWaitingRoom(client: Socket, payload: { userId: number; userName: string }) {
-    const { userId, userName } = payload;
-    
-    // Buscar una sala disponible o crear una nueva
-    let room = this.findAvailableRoom();
+    // Este método está deshabilitado - usar createRoom/joinRoom en su lugar
+    console.log('joinWaitingRoom called but disabled - use createRoom/joinRoom instead');
+    client.emit('roomError', { 
+      message: 'Método obsoleto. Usa "Crear Partida" o "Unirse a Partida" desde el lobby.' 
+    });
+  }
+
+  @SubscribeMessage('checkRoomStatus')
+  handleCheckRoomStatus(client: Socket) {
+    const roomId = this.playerSockets.get(client.id);
+    if (!roomId) {
+      console.log('Client not in any room');
+      client.emit('roomStatus', { inRoom: false });
+      return;
+    }
+
+    const room = this.gameRooms.get(roomId);
     if (!room) {
-      room = this.createNewRoom();
+      console.log('Room not found for client');
+      client.emit('roomStatus', { inRoom: false });
+      return;
     }
 
-    // Verificar si la sala ya está llena y en juego
-    const isSpectator = room.players.length >= 5 && (room.status === 'playing' || room.status === 'starting');
-    
-    if (!isSpectator) {
-      // Agregar jugador a la sala
-      const player: Player = {
-        id: userId,
-        name: userName,
-        socketId: client.id,
-        isReady: false
-      };
-
-      room.players.push(player);
-      this.playerSockets.set(client.id, room.id);
-      
-      // Unir al cliente a la sala de Socket.IO
-      client.join(room.id);
-
-      // Notificar a todos los jugadores en la sala
-      this.server.to(room.id).emit('playersUpdate', room.players);
-
-      console.log(`Player ${userName} joined room ${room.id}. Players: ${room.players.length}/5`);
-
-      // Si la sala está llena, iniciar countdown
-      if (room.players.length === 5) {
-        room.status = 'ready';
-        this.startGameCountdown(room);
-      }
-    } else {
-      // Unirse como espectador
-      this.playerSockets.set(client.id, room.id);
-      client.join(room.id);
-      console.log(`Player ${userName} joined room ${room.id} as spectator`);
-    }
-
-    // Enviar estado actual de la sala al nuevo jugador (jugador o espectador)
-    if (room.status === 'playing' || room.status === 'starting') {
-      const phase = room.roundTimer <= 50 ? 'trading' : 'news';
-      client.emit('roundState', {
-        status: room.status,
-        round: room.currentRound,
-        timer: room.roundTimer,
-        news: room.currentNews,
-        phase
-      });
-      console.log(`Sent current game state to new player: round ${room.currentRound}, timer ${room.roundTimer}`);
-    }
+    console.log('Client in room:', roomId, 'status:', room.status);
+    client.emit('roomStatus', { 
+      inRoom: true, 
+      roomId: roomId, 
+      status: room.status,
+      players: room.players.length 
+    });
   }
 
   @SubscribeMessage('gameTransaction')
   handleGameTransaction(client: Socket, payload: any) {
+    console.log('Transaction received:', payload);
+    
     const roomId = this.playerSockets.get(client.id);
-    if (!roomId) return;
+    if (!roomId) {
+      console.log('No room found for client');
+      client.emit('transactionProcessed', {
+        success: false,
+        error: 'No estás en una sala de juego',
+        message: 'Transacción no procesada: No estás en una sala de juego'
+      });
+      return;
+    }
 
     const room = this.gameRooms.get(roomId);
-    if (!room || room.status !== 'playing') return;
+    if (!room) {
+      console.log('Room not found');
+      client.emit('transactionProcessed', {
+        success: false,
+        error: 'Sala no encontrada',
+        message: 'Transacción no procesada: Sala no encontrada'
+      });
+      return;
+    }
 
-    // Simular validación de transacción
+    console.log('Room status:', room.status);
+    if (room.status !== 'playing') {
+      console.log('Game not active');
+      client.emit('transactionProcessed', {
+        success: false,
+        error: 'El juego no está activo',
+        message: 'Transacción no procesada: El juego no está activo'
+      });
+      return;
+    }
+
+    // Validar transacción
     const isValid = this.validateTransaction(payload);
+    console.log('Transaction valid:', isValid);
     const companyName = this.getCompanyName(payload.companyId);
     
     if (isValid) {
+      console.log('Transaction successful');
       // Transacción exitosa
       this.server.to(roomId).emit('transactionProcessed', {
         success: true,
@@ -279,6 +300,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
         message: `Transacción procesada exitosamente`
       });
     } else {
+      console.log('Transaction failed');
       // Transacción fallida
       const errorMessage = this.getTransactionError(payload);
       client.emit('transactionProcessed', {
@@ -291,15 +313,25 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   private validateTransaction(payload: any): boolean {
-    // Simulación de validación - en producción validar con base de datos
-    if (payload.type === 'buy') {
-      // Validar que tenga suficiente efectivo
-      return payload.quantity > 0 && payload.quantity <= 1000;
-    } else if (payload.type === 'sell') {
-      // Validar que tenga suficientes acciones
-      return payload.quantity > 0 && payload.quantity <= 500;
+    // Validación básica de transacción
+    if (!payload.type || !payload.quantity || !payload.companyId) {
+      return false;
     }
-    return false;
+
+    // Validación simple: solo verificar que la cantidad sea positiva
+    return payload.quantity > 0;
+  }
+
+  private getTransactionError(payload: any): string {
+    if (!payload.type || !payload.quantity || !payload.companyId) {
+      return 'Datos de transacción incompletos';
+    }
+    
+    if (payload.quantity <= 0) {
+      return 'La cantidad debe ser mayor a 0';
+    }
+    
+    return 'Transacción no válida';
   }
 
   private getCompanyName(companyId: number): string {
@@ -314,18 +346,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     return companies[companyId] ?? 'Empresa Desconocida';
   }
 
-  private getTransactionError(payload: any): string {
-    if (payload.quantity <= 0) {
-      return 'Cantidad debe ser mayor a 0';
-    }
-    if (payload.type === 'buy' && payload.quantity > 1000) {
-      return 'Fondos insuficientes';
-    }
-    if (payload.type === 'sell' && payload.quantity > 500) {
-      return 'No tiene suficientes acciones';
-    }
-    return 'Error desconocido en la transacción';
-  }
 
   private findAvailableRoom(): GameRoom | null {
     // Primero buscar salas en juego que tengan espacio
@@ -396,6 +416,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     room.currentRound = 1;
     
     console.log(`Game started in room ${room.id}`);
+    console.log(`Emitting gameStarted to room ${room.id} with ${room.players.length} players`);
     this.server.to(room.id).emit('gameStarted');
     
     // Iniciar primera ronda
@@ -415,8 +436,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     const news = this.generateRoundNews();
     room.currentNews = news;
     
-    console.log(`Starting round ${room.currentRound} in room ${room.id}`);
-    
     this.server.to(room.id).emit('roundStarted', {
       round: room.currentRound,
       news: news,
@@ -426,11 +445,9 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     // Timer de la ronda
     room.roundInterval = setInterval(() => {
       room.roundTimer--;
-      console.log(`Round timer: ${room.roundTimer} seconds remaining`);
       this.server.to(room.id).emit('roundTimer', room.roundTimer);
 
       if (room.roundTimer <= 0) {
-        console.log(`Round ${room.currentRound} ended`);
         clearInterval(room.roundInterval!);
         room.roundInterval = undefined;
         this.endRound(room);
