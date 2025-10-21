@@ -1,33 +1,18 @@
 import { useEffect, useState } from 'react'
-import { io, Socket } from 'socket.io-client'
+import { Socket } from 'socket.io-client'
+import { socketManager } from '../utils/socket'
 
 export function useSocket() {
   const [socket, setSocket] = useState<Socket | null>(null)
 
   useEffect(() => {
-    console.log('Creating socket connection...')
-    const newSocket = io('http://localhost:3000', {
-      transports: ['websocket', 'polling'], // Agregar polling como fallback
-      withCredentials: true
-    })
+    console.log('Getting socket from manager...')
+    const socket = socketManager.getSocket()
+    setSocket(socket)
 
-    newSocket.on('connect', () => {
-      console.log('Socket connected:', newSocket.id)
-    })
-
-    newSocket.on('disconnect', () => {
-      console.log('Socket disconnected')
-    })
-
-    newSocket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error)
-    })
-
-    setSocket(newSocket)
-
+    // No cerrar el socket al desmontar el componente
     return () => {
-      console.log('Closing socket connection')
-      newSocket.close()
+      console.log('Component unmounting, keeping socket alive')
     }
   }, [])
 

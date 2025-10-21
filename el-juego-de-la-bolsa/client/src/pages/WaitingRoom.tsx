@@ -27,6 +27,15 @@ export default function WaitingRoom() {
 
     // El usuario ya debería estar en una sala desde el lobby
     console.log('WaitingRoom mounted, user should already be in a room')
+    
+    // Verificar si estamos en una sala
+    socket.emit('checkRoomStatus')
+    
+    // Si se reconecta, verificar estado de la sala
+    socket.on('connect', () => {
+      console.log('Socket reconnected, checking room status')
+      socket.emit('checkRoomStatus')
+    })
 
     // Escuchar eventos del socket
     socket.on('playersUpdate', (playersList: Player[]) => {
@@ -50,10 +59,31 @@ export default function WaitingRoom() {
       nav('/game')
     })
 
+    socket.on('roomStatus', (data: any) => {
+      if (!data.inRoom) {
+        nav('/')
+      } else {
+        // Si ya estamos en una sala, solicitar el estado actual
+        socket.emit('requestRoundState')
+      }
+    })
+
+    socket.on('playerJoined', (data: any) => {
+      setPlayers(data.players)
+      if (data.players.length === 5) {
+        setGameStatus('ready')
+      } else {
+        setGameStatus('waiting')
+      }
+    })
+
     return () => {
       socket.off('playersUpdate')
       socket.off('gameStartCountdown')
       socket.off('gameStarted')
+      socket.off('roomStatus')
+      socket.off('playerJoined')
+      socket.off('connect')
     }
   }, [socket, user, nav])
 

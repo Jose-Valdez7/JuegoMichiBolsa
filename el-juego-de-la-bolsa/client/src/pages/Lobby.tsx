@@ -51,7 +51,7 @@ export default function Lobby() {
 
     socket.on('gameStartCountdown', (seconds: number) => {
       console.log('Game starting in:', seconds)
-      navigate('/game')
+      navigate('/waiting')
     })
 
     socket.on('gameStarted', () => {

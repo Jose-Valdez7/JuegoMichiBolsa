@@ -120,6 +120,7 @@ export default function GameBoard() {
       setCurrentNews(data.news || [])
 
       if (data.status === 'playing' || data.status === 'starting') {
+        console.log('Game is active, setting phase to:', data.phase)
         if (data.phase === 'news') {
           setGamePhase('news')
           setShowTradingInterface(false)
@@ -132,6 +133,8 @@ export default function GameBoard() {
           setGamePhase('playing')
           setShowTradingInterface(false)
         }
+      } else {
+        console.log('Game not active, status:', data.status)
       }
     })
 

@@ -41,9 +41,9 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   private gameRooms: Map<string, GameRoom> = new Map();
   private roomCodes: Map<string, string> = new Map(); // roomCode -> roomId
   private playerSockets: Map<string, string> = new Map(); // socketId -> roomId
+  private playerReconnections: Map<string, { roomId: string; playerName: string; characterId?: number }> = new Map(); // socketId -> room info
 
   onModuleInit() {
-    console.log('WebSocket Gateway initialized');
   }
 
   @SubscribeMessage('requestRoundState')
@@ -61,14 +61,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       remainingTime = Math.max(0, room.roundTimer - elapsed);
     }
 
-    const phase = remainingTime <= 50 ? 'trading' : 'news';
+    const phase = remainingTime <= 60 ? 'trading' : 'news';
 
-    console.log(`Sending round state to client ${client.id}:`, {
-      status: room.status,
-      round: room.currentRound,
-      timer: remainingTime,
-      phase
-    });
 
     client.emit('roundState', {
       status: room.status,
@@ -80,12 +74,56 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   handleConnection(client: Socket) {
-    console.log(`Client connected: ${client.id}`);
-    // Ya no verificamos tokens en el nuevo sistema
+    // Verificar si es una reconexión
+    const reconnectionInfo = this.playerReconnections.get(client.id);
+    if (reconnectionInfo) {
+      this.handlePlayerReconnection(client, reconnectionInfo);
   }
+}
   handleDisconnect(client: Socket) {
-    console.log(`Client disconnected: ${client.id}`);
     this.handlePlayerDisconnect(client);
+  }
+
+  private handlePlayerReconnection(client: Socket, reconnectionInfo: { roomId: string; playerName: string; characterId?: number }) {
+    const room = this.gameRooms.get(reconnectionInfo.roomId);
+    if (!room) {
+      this.playerReconnections.delete(client.id);
+      return;
+    }
+
+    // Actualizar el socketId del jugador en la sala
+    const playerIndex = room.players.findIndex(p => p.name === reconnectionInfo.playerName);
+    if (playerIndex !== -1) {
+      room.players[playerIndex].socketId = client.id;
+      this.playerSockets.set(client.id, reconnectionInfo.roomId);
+      client.join(reconnectionInfo.roomId);
+      
+      // Enviar estado actual de la sala
+      client.emit('roomStatus', { 
+        inRoom: true, 
+        roomId: reconnectionInfo.roomId, 
+        status: room.status,
+        players: room.players.length 
+      });
+      
+      // Si el juego ya está en progreso, enviar el estado actual
+      if (room.status === 'playing') {
+        this.sendCurrentGameState(client, room);
+      }
+    }
+  }
+
+  private sendCurrentGameState(client: Socket, room: GameRoom) {
+    // Enviar estado actual del juego
+    client.emit('gameStarted');
+    
+    if (room.currentRound > 0) {
+      client.emit('roundStarted', {
+        round: room.currentRound,
+        news: room.currentNews,
+        timer: room.roundTimer
+      });
+    }
   }
 
   @SubscribeMessage('createRoom')
@@ -125,10 +163,9 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     this.gameRooms.set(roomId, room);
     this.roomCodes.set(roomCode, roomId);
     this.playerSockets.set(client.id, roomId);
+    this.playerReconnections.set(client.id, { roomId, playerName, characterId });
     client.join(roomId);
 
-    console.log(`Room created: ${roomCode} (${roomId}) by ${playerName}`);
-    
     client.emit('roomCreated', { 
       roomCode, 
       players: room.players,
@@ -140,35 +177,27 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   handleJoinRoom(client: Socket, payload: { playerName: string; roomCode: string; characterId?: number }) {
     const { playerName, roomCode, characterId } = payload;
     
-    console.log(`Attempting to join room with code: ${roomCode}, player: ${playerName}, character: ${characterId}`);
-    
     // Buscar sala por código
     const roomId = this.roomCodes.get(roomCode);
     if (!roomId) {
-      console.log(`Room code ${roomCode} not found in roomCodes map`);
       client.emit('roomError', { message: 'Código de sala no encontrado' });
       return;
     }
 
     const room = this.gameRooms.get(roomId);
     if (!room) {
-      console.log(`Room ${roomId} not found`);
       client.emit('roomError', { message: 'Sala no encontrada' });
       return;
     }
 
-    console.log(`Found room ${roomId}, status: ${room.status}, players: ${room.players.length}`);
-
     // Verificar si la sala está llena
     if (room.players.length >= 5) {
-      console.log(`Room ${roomId} is full`);
       client.emit('roomError', { message: 'La sala está llena' });
       return;
     }
 
     // Verificar si la sala ya está en juego
     if (room.status === 'playing' || room.status === 'finished') {
-      console.log(`Room ${roomId} is already playing`);
       client.emit('roomError', { message: 'La partida ya está en curso' });
       return;
     }
@@ -177,7 +206,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     if (characterId !== undefined) {
       const characterTaken = room.players.some(p => p.characterId === characterId);
       if (characterTaken) {
-        console.log(`Character ${characterId} is already taken`);
         client.emit('roomError', { message: 'Este personaje ya está seleccionado' });
         return;
       }
@@ -194,9 +222,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
     room.players.push(player);
     this.playerSockets.set(client.id, roomId);
+    this.playerReconnections.set(client.id, { roomId, playerName, characterId });
     client.join(roomId);
-
-    console.log(`Player ${playerName} joined room ${roomCode} (${roomId}). Players: ${room.players.length}/5`);
 
     // Notificar a todos los jugadores
     this.server.to(roomId).emit('playerJoined', {
@@ -215,7 +242,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   @SubscribeMessage('joinWaitingRoom')
   handleJoinWaitingRoom(client: Socket, payload: { userId: number; userName: string }) {
     // Este método está deshabilitado - usar createRoom/joinRoom en su lugar
-    console.log('joinWaitingRoom called but disabled - use createRoom/joinRoom instead');
     client.emit('roomError', { 
       message: 'Método obsoleto. Usa "Crear Partida" o "Unirse a Partida" desde el lobby.' 
     });
@@ -225,19 +251,16 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   handleCheckRoomStatus(client: Socket) {
     const roomId = this.playerSockets.get(client.id);
     if (!roomId) {
-      console.log('Client not in any room');
       client.emit('roomStatus', { inRoom: false });
       return;
     }
 
     const room = this.gameRooms.get(roomId);
     if (!room) {
-      console.log('Room not found for client');
       client.emit('roomStatus', { inRoom: false });
       return;
     }
 
-    console.log('Client in room:', roomId, 'status:', room.status);
     client.emit('roomStatus', { 
       inRoom: true, 
       roomId: roomId, 
@@ -248,11 +271,9 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
   @SubscribeMessage('gameTransaction')
   handleGameTransaction(client: Socket, payload: any) {
-    console.log('Transaction received:', payload);
     
     const roomId = this.playerSockets.get(client.id);
     if (!roomId) {
-      console.log('No room found for client');
       client.emit('transactionProcessed', {
         success: false,
         error: 'No estás en una sala de juego',
@@ -263,7 +284,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
     const room = this.gameRooms.get(roomId);
     if (!room) {
-      console.log('Room not found');
       client.emit('transactionProcessed', {
         success: false,
         error: 'Sala no encontrada',
@@ -272,9 +292,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       return;
     }
 
-    console.log('Room status:', room.status);
     if (room.status !== 'playing') {
-      console.log('Game not active');
       client.emit('transactionProcessed', {
         success: false,
         error: 'El juego no está activo',
@@ -285,11 +303,9 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
     // Validar transacción
     const isValid = this.validateTransaction(payload);
-    console.log('Transaction valid:', isValid);
     const companyName = this.getCompanyName(payload.companyId);
     
     if (isValid) {
-      console.log('Transaction successful');
       // Transacción exitosa
       this.server.to(roomId).emit('transactionProcessed', {
         success: true,
@@ -300,7 +316,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
         message: `Transacción procesada exitosamente`
       });
     } else {
-      console.log('Transaction failed');
       // Transacción fallida
       const errorMessage = this.getTransactionError(payload);
       client.emit('transactionProcessed', {
@@ -315,7 +330,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   private validateTransaction(payload: any): boolean {
     // Validación básica de transacción
     if (!payload.type || !payload.quantity || !payload.companyId) {
-      return false;
+    return false;
     }
 
     // Validación simple: solo verificar que la cantidad sea positiva
@@ -351,7 +366,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     // Primero buscar salas en juego que tengan espacio
     for (const room of this.gameRooms.values()) {
       if ((room.status === 'playing' || room.status === 'starting') && room.players.length < 5) {
-        console.log(`Found active room ${room.id} with ${room.players.length} players`);
         return room;
       }
     }
@@ -359,7 +373,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     // Luego buscar salas en espera
     for (const room of this.gameRooms.values()) {
       if (room.status === 'waiting' && room.players.length < 5) {
-        console.log(`Found waiting room ${room.id} with ${room.players.length} players`);
         return room;
       }
     }
@@ -367,7 +380,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     // Si no hay salas disponibles, buscar cualquier sala activa para unirse como espectador
     for (const room of this.gameRooms.values()) {
       if (room.status === 'playing' || room.status === 'starting') {
-        console.log(`Found active room ${room.id} to join as spectator`);
         return room;
       }
     }
@@ -392,7 +404,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
     this.gameRooms.set(roomId, room);
     this.roomCodes.set(roomCode, roomId);
-    console.log(`Created new room: ${roomId} with code: ${roomCode}`);
     return room;
   }
 
@@ -415,8 +426,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     room.status = 'playing';
     room.currentRound = 1;
     
-    console.log(`Game started in room ${room.id}`);
-    console.log(`Emitting gameStarted to room ${room.id} with ${room.players.length} players`);
     this.server.to(room.id).emit('gameStarted');
     
     // Iniciar primera ronda
@@ -424,13 +433,15 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   private startRound(room: GameRoom) {
+    
     // Limpiar intervalo anterior si existe
     if (room.roundInterval) {
       clearInterval(room.roundInterval);
     }
     
-    room.roundTimer = 60; // 1 minuto por ronda
+    room.roundTimer = 75; // 15 segundos de noticias + 60 segundos de trading
     room.roundStartTime = Date.now();
+    
     
     // Generar noticias para la ronda
     const news = this.generateRoundNews();
