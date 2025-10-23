@@ -1,28 +1,39 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { TransactionType } from '@prisma/client';
+import { Prisma, TransactionType } from '@prisma/client';
 import { GamesService } from './games.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 
-@UseGuards(JwtAuthGuard)
 @Controller('game')
 export class GamesController {
   constructor(private games: GamesService) {}
 
+  @UseGuards(JwtAuthGuard)
   @Get('start')
   async start() {
     return this.games.startGame();
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('news')
   async news() {
     return this.games.currentNews();
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('transaction')
-  async transaction(@Body() body: { userId: number; companyId: number; type: TransactionType; quantity: number }) {
+  async transaction(
+    @Body()
+    body: {
+      userId: number;
+      companyId: number;
+      type: TransactionType;
+      quantity: number;
+    },
+  ) {
     return this.games.executeTransaction(body);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('rounds')
   async rounds() {
     return this.games.roundState();

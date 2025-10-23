@@ -63,6 +63,15 @@ export default function WaitingRoom() {
       if (!data.inRoom) {
         nav('/')
       } else {
+        // Actualizar lista de jugadores
+        if (data.playersList) {
+          setPlayers(data.playersList)
+          if (data.playersList.length === 5) {
+            setGameStatus('ready')
+          } else {
+            setGameStatus('waiting')
+          }
+        }
         // Si ya estamos en una sala, solicitar el estado actual
         socket.emit('requestRoundState')
       }

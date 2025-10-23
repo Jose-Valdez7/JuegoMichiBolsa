@@ -7,6 +7,7 @@ interface Company {
   currentPrice: number
   basePrice: number
   sector: string
+  availableStocks?: number
 }
 
 interface StockChartProps {
@@ -115,7 +116,11 @@ export default function StockChart({ companies, onCompanySelect }: StockChartPro
                 {/* Base info */}
                 <div className="mt-2 text-center">
                   <div className="text-xs text-white font-semibold">{company.symbol}</div>
-                  <div className="text-xs text-slate-400">$999</div>
+                  <div className="text-xs text-slate-400">
+                    {company.availableStocks !== undefined
+                      ? `${company.availableStocks.toLocaleString('es-EC')} disponibles`
+                      : 'N/D'}
+                  </div>
                   <div className={`text-xs font-bold ${
                     change >= 0 ? 'text-green-400' : 'text-red-400'
                   }`}>

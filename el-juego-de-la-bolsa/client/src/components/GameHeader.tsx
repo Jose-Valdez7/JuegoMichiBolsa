@@ -6,6 +6,7 @@ interface GameHeaderProps {
   currentRound: number
   totalRounds: number
   roundTimer: number
+  totalElapsedSeconds: number
   gamePhase: 'playing' | 'news' | 'trading' | 'results'
   onLogout?: () => void
   onToggleSound?: () => void
@@ -16,6 +17,7 @@ export default function GameHeader({
   currentRound,
   totalRounds,
   roundTimer,
+  totalElapsedSeconds,
   gamePhase,
   onLogout,
   onToggleSound,
@@ -88,7 +90,7 @@ export default function GameHeader({
 
           <div className="bg-white/10 rounded-lg px-4 py-2">
             <div className="text-xs opacity-75">Tiempo Total</div>
-            <div className="text-sm font-medium">5:00</div>
+            <div className="text-sm font-medium">{formatTime(totalElapsedSeconds)}</div>
           </div>
         </div>
 
