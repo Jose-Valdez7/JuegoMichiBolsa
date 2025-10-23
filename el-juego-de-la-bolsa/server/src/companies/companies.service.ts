@@ -7,6 +7,7 @@ export class CompaniesService {
 
   async findAll() {
     return this.prisma.company.findMany({
+      where: { symbol: { in: ['MPA', 'MHT', 'MAG', 'MTC', 'MFL', 'MHL'] } },
       orderBy: { symbol: 'asc' }
     });
   }

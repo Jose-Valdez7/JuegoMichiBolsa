@@ -23,6 +23,7 @@ async function main() {
     { name: 'MichiTech', symbol: 'MTC', sector: 'Tecnología', basePrice: 90, currentPrice: 90, actionsTotal: 110000 },
     { name: 'MichiAgro', symbol: 'MAG', sector: 'Agricultura', basePrice: 70, currentPrice: 70, actionsTotal: 90000 },
     { name: 'MichiFuel', symbol: 'MFL', sector: 'Energía', basePrice: 110, currentPrice: 110, actionsTotal: 95000 },
+    { name: 'MichiHealth', symbol: 'MHL', sector: 'Salud', basePrice: 85, currentPrice: 85, actionsTotal: 105000 },
   ];
 
   for (const c of companies) {

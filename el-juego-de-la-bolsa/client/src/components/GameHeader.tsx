@@ -138,7 +138,7 @@ export default function GameHeader({
             <motion.div
               className="bg-gradient-to-r from-yellow-400 to-orange-500 h-2 rounded-full"
               initial={{ width: '100%' }}
-              animate={{ width: `${(roundTimer / 60) * 100}%` }}
+              animate={{ width: `${(roundTimer > 60 ? 100 : Math.max(0, Math.min(100, (roundTimer / 60) * 100)))}%` }}
               transition={{ duration: 1, ease: 'linear' }}
             />
           </div>

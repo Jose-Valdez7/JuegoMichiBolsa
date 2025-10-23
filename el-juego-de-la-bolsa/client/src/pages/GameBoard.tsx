@@ -13,14 +13,12 @@ import NewsReview from '../components/NewsReview'
 import { usePlayerPortfolio } from '../store/usePlayerPortfolio'
 import { FixedIncomeOffer, PlayerState } from '../types/game'
 
-const isDevelopmentEnv = typeof import.meta !== 'undefined' && typeof import.meta.env !== 'undefined'
-  ? import.meta.env.MODE !== 'production'
-  : false
+const env: any = (typeof import.meta !== 'undefined' ? (import.meta as any).env : {}) || {}
+const isDevMode = env.MODE !== 'production'
+const debugEnabled = env.VITE_DEBUG === 'true'
 
 const debugLog = (...args: unknown[]) => {
-  if (isDevelopmentEnv) {
-    console.log(...args)
-  }
+  if (debugEnabled) console.log(...args)
 }
 
 interface Company {
@@ -31,6 +29,7 @@ interface Company {
   basePrice: number
   sector: string
   availableStocks?: number
+  availableShares?: number
 }
 
 export default function GameBoard() {
@@ -42,6 +41,8 @@ export default function GameBoard() {
   const TOTAL_ROUNDS = 5
   const [roundTimer, setRoundTimer] = useState(60)
   const totalElapsedSecondsRef = useRef(0)
+  const [totalElapsedSeconds, setTotalElapsedSeconds] = useState(0)
+
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [currentRound, setCurrentRound] = useState(1)
@@ -53,13 +54,15 @@ export default function GameBoard() {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [fixedIncomeOffers, setFixedIncomeOffers] = useState<FixedIncomeOffer[]>([])
   const [fixedIncomeOrders, setFixedIncomeOrders] = useState<Record<string, number>>({})
+  const [isGameRunning, setIsGameRunning] = useState(false)
+
   const {
     state: playerState,
     syncFromServer,
     updateStage,
     applyPriceMap
   } = usePlayerPortfolio()
-  
+
   const socket = useSocket()
   const nav = useNavigate()
   const {
@@ -76,12 +79,44 @@ export default function GameBoard() {
   const hasShownFixedIncomeAlert = useRef(false)
 
   const updateFixedIncomeOffers = useCallback((offers: FixedIncomeOffer[] = []) => {
-    setFixedIncomeOffers(offers)
+    setFixedIncomeOffers((current) => {
+      const sameLength = current.length === offers.length
+      const isSame = sameLength && current.every((currentOffer) => {
+        const next = offers.find((offer) => offer.id === currentOffer.id)
+        if (!next) {
+          return false
+        }
+        return (
+          next.unitPrice === currentOffer.unitPrice &&
+          next.interestRate === currentOffer.interestRate &&
+          next.termMonths === currentOffer.termMonths &&
+          next.remainingUnits === currentOffer.remainingUnits
+        )
+      })
+
+      if (isSame) {
+        return current
+      }
+
+      return offers
+    })
+
     setFixedIncomeOrders((previous) => {
       const next: Record<string, number> = {}
       offers.forEach((offer) => {
         next[offer.id] = previous[offer.id] ?? 0
       })
+
+      const prevKeys = Object.keys(previous)
+      const nextKeys = Object.keys(next)
+      const sameKeys = prevKeys.length === nextKeys.length && nextKeys.every((key) => prevKeys.includes(key))
+      if (sameKeys) {
+        const sameValues = nextKeys.every((key) => previous[key] === next[key])
+        if (sameValues) {
+          return previous
+        }
+      }
+
       return next
     })
   }, [])
@@ -149,6 +184,8 @@ export default function GameBoard() {
     debugLog('Companies state updated:', companies.length, 'companies:', companies)
   }, [companies])
 
+  
+
   useEffect(() => {
     if (!socket) {
       debugLog('Socket not available yet')
@@ -157,11 +194,11 @@ export default function GameBoard() {
 
     debugLog('Setting up socket listeners...')
 
-    const handleAnyEvent = (eventName: string, ...args: unknown[]) => {
-      debugLog(`Socket event received: ${eventName}`, args)
+    const handleAnyEvent = (eventName: string) => {
+      debugLog(`Socket event received: ${eventName}`)
     }
 
-    if (isDevelopmentEnv) {
+    if (isDevMode && debugEnabled) {
       socket.onAny(handleAnyEvent)
     }
 
@@ -173,12 +210,14 @@ export default function GameBoard() {
       setGamePhase('playing')
       setIsRoundActive(true)
       totalElapsedSecondsRef.current = 0
+      setTotalElapsedSeconds(0)
+      setIsGameRunning(true)
       hasShownFixedIncomeAlert.current = false
       updateFixedIncomeOffers([])
     })
 
     socket.on('playersUpdate', (players: any[]) => {
-      debugLog('Players update received:', players)
+      debugLog(`Players update received. Count: ${players?.length ?? 0}`)
     })
 
     socket.on('gameStartCountdown', (seconds: number) => {
@@ -203,8 +242,8 @@ export default function GameBoard() {
     debugLog('Requesting round state...')
     socket.emit('requestRoundState')
 
-    socket.on('roundState', (data: { status: string; round: number; timer: number; news: any; phase: 'news' | 'trading' | 'playing'; fixedIncomeOffers?: FixedIncomeOffer[] }) => {
-      debugLog('Received round state:', data)
+    socket.on('roundState', (data: { status: string; round: number; timer: number; news: any; phase: 'news' | 'trading' | 'playing'; fixedIncomeOffers?: FixedIncomeOffer[]; totalElapsedSeconds?: number }) => {
+      debugLog(`Received round state. round=${data.round} phase=${data.phase} timer=${data.timer}`)
       setCurrentRound(data.round || 1)
       setRoundTimer(data.timer || 0)
       setCurrentNews(data.news || [])
@@ -213,6 +252,7 @@ export default function GameBoard() {
 
       if (data.status === 'playing' || data.status === 'starting') {
         debugLog('Game is active, setting phase to:', data.phase)
+        setIsGameRunning(true)
         if (data.phase === 'news') {
           setGamePhase('news')
           setShowTradingInterface(false)
@@ -227,6 +267,7 @@ export default function GameBoard() {
         }
       } else {
         console.log('Game not active, status:', data.status)
+        setIsGameRunning(false)
       }
     })
 
@@ -250,8 +291,13 @@ export default function GameBoard() {
       }
     })
 
-    socket.on('roundStarted', (data: { round: number; news: any; timer: number; fixedIncomeOffers?: FixedIncomeOffer[] }) => {
-      debugLog('Round started:', data)
+    socket.on('gameTimer', (secs: number) => {
+      setTotalElapsedSeconds(secs)
+      totalElapsedSecondsRef.current = secs
+    })
+
+    socket.on('roundStarted', (data: { round: number; news: any; timer: number; fixedIncomeOffers?: FixedIncomeOffer[]; totalElapsedSeconds?: number }) => {
+      debugLog(`Round started. round=${data.round} offers=${data.fixedIncomeOffers?.length ?? 0}`)
       setCurrentRound(data.round)
       setRoundTimer(data.timer)
       setGamePhase('news')
@@ -263,22 +309,21 @@ export default function GameBoard() {
       if (data.round === 1 && !hasShownFixedIncomeAlert.current && (data.fixedIncomeOffers?.length ?? 0) > 0) {
         showRentaFijaAlert(data.fixedIncomeOffers!.map((offer) => offer.issuer))
         hasShownFixedIncomeAlert.current = true
-        totalElapsedSecondsRef.current = 0
       }
       
       // Actualizar noticias del juego
       fetchNews()
       
-      // Mostrar noticias por 10 segundos, luego cambiar a trading
+      // Mostrar noticias por 15 segundos, luego cambiar a trading (alineado con servidor)
       setTimeout(() => {
         setGamePhase('trading')
         setShowTradingInterface(true)
         showSystemNotification('Fase de Trading iniciada. ¡Realiza tus transacciones!')
-      }, 10000)
+      }, 15000)
     })
 
     socket.on('roundEnded', (data: { round: number; priceChanges: Record<string, { newPrice: number }> }) => {
-      debugLog('Round ended:', data)
+      debugLog(`Round ended. round=${data.round} changes=${Object.keys(data.priceChanges || {}).length}`)
       setGamePhase('results')
       setIsRoundActive(false)
       setShowTradingInterface(false)
@@ -317,7 +362,7 @@ export default function GameBoard() {
     })
 
     socket.on('fixedIncomeOffersUpdate', (offers: FixedIncomeOffer[]) => {
-      debugLog('Fixed income offers update:', offers)
+      debugLog(`Fixed income offers update. count=${offers?.length ?? 0}`)
       updateFixedIncomeOffers(offers)
     })
 
@@ -340,6 +385,7 @@ export default function GameBoard() {
     socket.on('gameFinished', (results: any) => {
       debugLog('Game finished:', results)
       showSystemNotification('¡Juego terminado! Calculando resultados finales...')
+      setIsGameRunning(false)
       setTimeout(() => {
         nav('/results')
       }, 2000)
@@ -361,21 +407,53 @@ export default function GameBoard() {
         setError('Error al procesar resultado de transacción')
       }
     })
+    socket.on('bulkTransactionProcessed', (payload: { success: boolean; results: Array<{ success: boolean; type: 'BUY' | 'SELL'; companyId: number; quantity: number; error?: string; companyName?: string; companySymbol?: string; priceAtMoment?: number }>; processed: number; total: number; serverProcessingMs?: number; clientTs?: number; error?: string }) => {
+      try {
+        setIsLoading(false)
+        if (!payload) return
+        if (payload.success) {
+          payload.results.filter(r => r.success).forEach(r => {
+            if (r.companyName && r.quantity) {
+              showTransactionConfirmation(r.type as any, r.companyName, r.quantity)
+            }
+          })
+
+          const failed = payload.results.filter(r => !r.success)
+          if (failed.length > 0) {
+            failed.slice(0, 3).forEach(r => {
+              const label = r.companySymbol || r.companyName || `#${r.companyId}`
+              showTransactionError(r.error || `No se pudo procesar ${label}`)
+            })
+            if (failed.length > 3) {
+              showTransactionError(`Y ${failed.length - 3} errores más...`)
+            }
+          }
+        } else {
+          showTransactionError(payload.error || 'Error al procesar órdenes')
+        }
+      } catch (error) {
+        console.error('Error processing bulk result:', error)
+        setError('Error al procesar resultado de órdenes')
+      } finally {
+        setIsLoading(false)
+      }
+    })
 
     socket.on('portfolioUpdate', (portfolio: PlayerState) => {
-      debugLog('Portfolio updated:', portfolio)
+      debugLog(`Portfolio updated. cash=${portfolio?.cash ?? 'n/a'} holdings=${portfolio?.holdings?.length ?? 0}`)
       syncFromServer(portfolio)
     })
 
     socket.on('stocksUpdate', (stocks: Record<number, number>) => {
-      debugLog('🔔 Stocks updated received:', stocks)
+      debugLog(`🔔 Stocks updated received. size=${Object.keys(stocks || {}).length}`)
       try {
         setCompanies((previousCompanies: Company[]) => {
           const updatedCompanies = previousCompanies.map((company: Company) => {
             const availableStocks = stocks[company.id] ?? company.availableStocks ?? 999
             return {
               ...company,
-              availableStocks
+              availableStocks,
+              availableShares: availableStocks as any
             }
           })
           return updatedCompanies
@@ -395,12 +473,14 @@ export default function GameBoard() {
       socket.off('roundState')
       socket.off('gameStarted')
       socket.off('transactionProcessed')
+      socket.off('gameTimer')
+      socket.off('bulkTransactionProcessed')
       socket.off('portfolioUpdate')
       socket.off('stocksUpdate')
       socket.off('fixedIncomeOffersUpdate')
       socket.off('fixedIncomePurchaseResult')
       socket.off('fixedIncomePayout')
-      if (isDevelopmentEnv) {
+      if (isDevMode && debugEnabled) {
         socket.offAny(handleAnyEvent)
       }
     }
@@ -409,42 +489,24 @@ export default function GameBoard() {
   const loadCompanies = async () => {
     try {
       const response = await api.get('/api/companies')
-      setCompanies(response.data)
+      const bySymbolId: Record<string, number> = { MPA: 1, MHT: 2, MAG: 3, MTC: 4, MFL: 5, MHL: 6 }
+      const normalized = (response.data as Company[]).map((c: any) => ({
+        ...c,
+        id: bySymbolId[c.symbol] ?? c.id
+      })).sort((a: Company, b: Company) => a.id - b.id)
+      setCompanies(normalized)
     } catch (error) {
       console.error('Error loading companies:', error)
-      // Fallback data para testing
-      setCompanies([
+      const fallbackCompanies = [
         { id: 1, name: 'MichiPapeles', symbol: 'MPA', currentPrice: 80, basePrice: 80, sector: 'Papelería' },
         { id: 2, name: 'MichiHotel', symbol: 'MHT', currentPrice: 100, basePrice: 100, sector: 'Turismo' },
         { id: 3, name: 'MichiAgro', symbol: 'MAG', currentPrice: 70, basePrice: 70, sector: 'Agricultura' },
         { id: 4, name: 'MichiTech', symbol: 'MTC', currentPrice: 90, basePrice: 90, sector: 'Tecnología' },
-        { id: 5, name: 'MichiFuel', symbol: 'MFL', currentPrice: 110, basePrice: 110, sector: 'Energía' }
-      ])
+        { id: 5, name: 'MichiFuel', symbol: 'MFL', currentPrice: 110, basePrice: 110, sector: 'Energía' },
+        { id: 6, name: 'MichiHealth', symbol: 'MHL', currentPrice: 85, basePrice: 85, sector: 'Salud' }
+      ]
+      setCompanies(fallbackCompanies)
     }
-
-    const interval = setInterval(() => {
-      totalElapsedSecondsRef.current += 1
-    }, 1000)
-
-    return () => clearInterval(interval)
-  }, [gamePhase, currentRound])
-
-  const loadCompanies = async () => {
-    // Usar datos de fallback por defecto para asegurar que siempre tengamos las 6 empresas
-    const fallbackCompanies = [
-      { id: 1, name: 'TechNova', symbol: 'TNV', currentPrice: 75.00, basePrice: 75.00, sector: 'Tech' },
-      { id: 2, name: 'GreenEnergy Corp', symbol: 'GEC', currentPrice: 50.00, basePrice: 50.00, sector: 'Energy' },
-      { id: 3, name: 'HealthPlus Inc', symbol: 'HPI', currentPrice: 75.00, basePrice: 75.00, sector: 'Health' },
-      { id: 4, name: 'RetailMax', symbol: 'RTM', currentPrice: 80.00, basePrice: 80.00, sector: 'Retail' },
-      { id: 5, name: 'FinanceFirst', symbol: 'FF', currentPrice: 90.00, basePrice: 90.00, sector: 'Finance' },
-      { id: 6, name: 'AutoDrive Ltd', symbol: 'ADL', currentPrice: 65.00, basePrice: 65.00, sector: 'Tech' }
-    ]
-    
-    console.log('Setting fallback companies:', fallbackCompanies.length, 'companies')
-    setCompanies(fallbackCompanies)
-    
-    // No intentar cargar del servidor por ahora para evitar problemas
-    console.log('Using fallback companies only')
   }
 
   const loadPortfolio = async () => {
@@ -482,6 +544,29 @@ export default function GameBoard() {
       alert('Error al procesar la transacción')
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleBulkTransaction = (actions: Array<{ type: 'BUY' | 'SELL'; companyId: number; quantity: number }>) => {
+    try {
+      if (!socket) {
+        showTransactionError('No hay conexión con el servidor')
+        return
+      }
+      if (!actions || actions.length === 0) {
+        showTransactionError('No hay órdenes para procesar')
+        return
+      }
+      setIsLoading(true)
+      setError(null)
+      socket.emit('bulkGameTransactions', {
+        userId: 1, // TODO: obtener del auth
+        actions,
+        clientTs: Date.now()
+      })
+    } catch (error) {
+      console.error('Bulk transaction error:', error)
+      setError('Error al procesar las órdenes')
     }
   }
 
@@ -542,7 +627,7 @@ export default function GameBoard() {
         currentRound={currentRound}
         totalRounds={TOTAL_ROUNDS}
         roundTimer={roundTimer}
-        totalElapsedSeconds={totalElapsedSecondsRef.current}
+        totalElapsedSeconds={totalElapsedSeconds}
         gamePhase={gamePhase}
         onLogout={handleLogout}
         onToggleSound={handleToggleSound}
@@ -680,13 +765,13 @@ export default function GameBoard() {
             companies={companies}
             onTransaction={executeTransaction}
             isRoundActive={isRoundActive}
-            roundTimer={roundTimer}
             playerHoldings={playerState.holdings}
             fixedIncomeOffers={fixedIncomeOffers}
             fixedIncomeOrders={fixedIncomeOrders}
             onFixedIncomeQuantityChange={handleFixedIncomeInputChange}
             onFixedIncomePurchase={handleFixedIncomePurchase}
             canTradeFixedIncome={currentRound === 1}
+            onBulkTransaction={handleBulkTransaction}
           />
         </motion.div>
       )}

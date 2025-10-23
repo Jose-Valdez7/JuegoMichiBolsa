@@ -48,6 +48,8 @@ interface GameRoom {
   roundInterval?: NodeJS.Timeout;
   createdAt: number;
   fixedIncomeOffers: FixedIncomeOffer[];
+  totalElapsedSeconds: number;
+  gameClockInterval?: NodeJS.Timeout;
 }
 
 @WebSocketGateway({  cors: { 
@@ -68,6 +70,11 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   private companyStocks: Map<string, Map<number, number>> = new Map(); // roomId -> companyId -> available stocks
   private latestGameResults: { roomId: string; results: any[] } | null = null;
   private roomFixedIncomeOffers: Map<string, FixedIncomeOffer[]> = new Map();
+  private debugEnabled: boolean = process.env.DEBUG_WS === 'true';
+  private dlog(...args: any[]) { if (this.debugEnabled) console.log(...args); }
+  private stocksUpdateTimers: Map<string, NodeJS.Timeout> = new Map();
+  private fixedIncomeOffersUpdateTimers: Map<string, NodeJS.Timeout> = new Map();
+  private currentPrices: Map<number, number> = new Map();
 
   private readonly fixedIncomeTemplates: Array<Omit<FixedIncomeOffer, 'remainingUnits'>> = [
     {
@@ -239,7 +246,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     }
 
     this.roomFixedIncomeOffers.set(roomId, offers);
-    this.server.to(roomId).emit('fixedIncomeOffersUpdate', offers);
+    this.scheduleFixedIncomeOffersUpdate(roomId);
   }
 
   private getPlayerFixedIncome(roomId: string, socketId: string): FixedIncomeHolding[] {
@@ -284,6 +291,212 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     }
   }
 
+  @SubscribeMessage('gameTransaction')
+  handleGameTransaction(
+    client: Socket,
+    payload: { userId?: number; companyId: number; type: 'BUY' | 'SELL'; quantity: number }
+  ) {
+    const roomId = this.playerSockets.get(client.id);
+    if (!roomId) {
+      client.emit('transactionProcessed', { success: false, error: 'No estás en una sala' });
+      return;
+    }
+
+    const room = this.gameRooms.get(roomId);
+    if (!room || room.status !== 'playing') {
+      client.emit('transactionProcessed', { success: false, error: 'La partida no está activa' });
+      return;
+    }
+
+    const { companyId, type, quantity } = payload || ({} as any);
+    const q = Number(quantity);
+    if (!companyId || (type !== 'BUY' && type !== 'SELL') || !q || q <= 0) {
+      client.emit('transactionProcessed', { success: false, error: 'Solicitud inválida' });
+      return;
+    }
+
+    const roomPortfolios = this.playerPortfolios.get(roomId);
+    if (!roomPortfolios) {
+      client.emit('transactionProcessed', { success: false, error: 'Portafolio no encontrado' });
+      return;
+    }
+
+    const portfolio = roomPortfolios.get(client.id);
+    if (!portfolio) {
+      client.emit('transactionProcessed', { success: false, error: 'Portafolio no inicializado' });
+      return;
+    }
+
+    const price = this.getStockPrice(companyId);
+    const companyName = this.getCompanyName(companyId);
+    const companySymbol = this.getCompanySymbol(companyId);
+
+    const roomStocks = this.companyStocks.get(roomId) ?? new Map<number, number>();
+    if (!this.companyStocks.has(roomId)) {
+      this.companyStocks.set(roomId, roomStocks);
+    }
+    if (!roomStocks.has(companyId)) {
+      roomStocks.set(companyId, 999);
+    }
+
+    if (type === 'BUY') {
+      const available = roomStocks.get(companyId) ?? 0;
+      const totalCost = price * q;
+      if (available < q) {
+        client.emit('transactionProcessed', { success: false, error: 'No hay suficientes acciones disponibles' });
+        return;
+      }
+      if (portfolio.cash < totalCost) {
+        client.emit('transactionProcessed', { success: false, error: 'Fondos insuficientes' });
+        return;
+      }
+
+      portfolio.cash -= totalCost;
+      const currentQty = portfolio.stocks.get(companyId) ?? 0;
+      portfolio.stocks.set(companyId, currentQty + q);
+      roomStocks.set(companyId, available - q);
+
+      client.emit('transactionProcessed', {
+        success: true,
+        type,
+        companyId,
+        companyName,
+        companySymbol,
+        quantity: q,
+        priceAtMoment: price
+      });
+    } else {
+      const holdingQty = portfolio.stocks.get(companyId) ?? 0;
+      if (holdingQty < q) {
+        client.emit('transactionProcessed', { success: false, error: 'No tienes suficientes acciones para vender' });
+        return;
+      }
+
+      const proceeds = price * q;
+      portfolio.cash += proceeds;
+      const newQty = holdingQty - q;
+      if (newQty > 0) {
+        portfolio.stocks.set(companyId, newQty);
+      } else {
+        portfolio.stocks.delete(companyId);
+      }
+
+      const available = roomStocks.get(companyId) ?? 0;
+      roomStocks.set(companyId, available + q);
+
+      client.emit('transactionProcessed', {
+        success: true,
+        type,
+        companyId,
+        companyName,
+        companySymbol,
+        quantity: q,
+        priceAtMoment: price
+      });
+    }
+
+    const updatedPortfolio = this.getPlayerPortfolio(roomId, client.id);
+    if (updatedPortfolio) {
+      this.server.to(client.id).emit('portfolioUpdate', updatedPortfolio);
+    }
+
+    const stocksPayload: Record<number, number> = {};
+    stocksPayload[companyId] = this.companyStocks.get(roomId)?.get(companyId) ?? 0;
+    this.server.to(roomId).emit('stocksUpdate', stocksPayload);
+  }
+
+  @SubscribeMessage('bulkGameTransactions')
+  handleBulkGameTransactions(
+    client: Socket,
+    payload: { userId?: number; actions: Array<{ type: 'BUY' | 'SELL'; companyId: number; quantity: number }>; clientTs?: number }
+  ) {
+    const roomId = this.playerSockets.get(client.id);
+    if (!roomId) {
+      client.emit('bulkTransactionProcessed', { success: false, error: 'No estás en una sala', results: [], processed: 0, total: 0 });
+      return;
+    }
+
+    const actions = payload?.actions ?? [];
+    if (!Array.isArray(actions) || actions.length === 0) {
+      client.emit('bulkTransactionProcessed', { success: false, error: 'No hay órdenes para procesar', results: [], processed: 0, total: 0 });
+      return;
+    }
+
+    const results: Array<{ success: boolean; type: 'BUY' | 'SELL'; companyId: number; quantity: number; error?: string; companyName?: string; companySymbol?: string; priceAtMoment?: number }>
+      = [];
+    const changed: Record<number, number> = {};
+
+    for (const action of actions) {
+      const { companyId, type, quantity } = action || ({} as any);
+      const q = Number(quantity) || 0;
+      if (!companyId || (type !== 'BUY' && type !== 'SELL') || q <= 0) {
+        results.push({ success: false, type: (type as any), companyId: (companyId as any), quantity: q, error: 'Orden inválida' });
+        continue;
+      }
+
+      const price = this.getStockPrice(companyId);
+      const companyName = this.getCompanyName(companyId);
+      const companySymbol = this.getCompanySymbol(companyId);
+
+      // Reutilizar la lógica del single transaction invocando internamente el handler público
+      // pero sin emitir por cada paso intermedio; replicamos la lógica mínima aquí para control fino.
+      const roomPortfolios = this.playerPortfolios.get(roomId);
+      const portfolio = roomPortfolios?.get(client.id);
+      const roomStocks = this.companyStocks.get(roomId) ?? new Map<number, number>();
+      if (roomPortfolios && portfolio) {
+        if (!roomStocks.has(companyId)) roomStocks.set(companyId, 999);
+        if (!this.companyStocks.has(roomId)) this.companyStocks.set(roomId, roomStocks);
+
+        if (type === 'BUY') {
+          const available = roomStocks.get(companyId) ?? 0;
+          const cost = price * q;
+          if (available >= q && portfolio.cash >= cost) {
+            portfolio.cash -= cost;
+            portfolio.stocks.set(companyId, (portfolio.stocks.get(companyId) ?? 0) + q);
+            roomStocks.set(companyId, available - q);
+            changed[companyId] = roomStocks.get(companyId)!;
+            results.push({ success: true, type, companyId, quantity: q, companyName, companySymbol, priceAtMoment: price });
+          } else {
+            results.push({ success: false, type, companyId, quantity: q, error: available < q ? 'Sin acciones suficientes' : 'Fondos insuficientes', companyName, companySymbol, priceAtMoment: price });
+          }
+        } else {
+          const holdingQty = portfolio.stocks.get(companyId) ?? 0;
+          if (holdingQty >= q) {
+            portfolio.cash += price * q;
+            const newQty = holdingQty - q;
+            if (newQty > 0) portfolio.stocks.set(companyId, newQty); else portfolio.stocks.delete(companyId);
+            roomStocks.set(companyId, (roomStocks.get(companyId) ?? 0) + q);
+            changed[companyId] = roomStocks.get(companyId)!;
+            results.push({ success: true, type, companyId, quantity: q, companyName, companySymbol, priceAtMoment: price });
+          } else {
+            results.push({ success: false, type, companyId, quantity: q, error: 'No tienes suficientes acciones', companyName, companySymbol, priceAtMoment: price });
+          }
+        }
+      } else {
+        results.push({ success: false, type, companyId, quantity: q, error: 'Portafolio no disponible', companyName, companySymbol, priceAtMoment: price });
+      }
+    }
+
+    const updatedPortfolio = this.getPlayerPortfolio(roomId, client.id);
+    if (updatedPortfolio) {
+      this.server.to(client.id).emit('portfolioUpdate', updatedPortfolio);
+    }
+
+    if (Object.keys(changed).length > 0) {
+      this.server.to(roomId).emit('stocksUpdate', changed);
+    }
+
+    const allOk = results.every(r => r.success);
+    client.emit('bulkTransactionProcessed', {
+      success: allOk,
+      results,
+      processed: results.length,
+      total: actions.length,
+      serverProcessingMs: undefined,
+      clientTs: payload?.clientTs
+    });
+  }
+
   private getFixedIncomeValue(roomId: string, socketId: string) {
     return this.getPlayerFixedIncome(roomId, socketId).reduce((total, bond) => total + bond.unitPrice * bond.quantity, 0);
   }
@@ -300,11 +513,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     if (!room) return;
 
     // Calcular tiempo restante basado en el tiempo transcurrido
-    let remainingTime = room.roundTimer;
-    if (room.roundStartTime && room.roundTimer > 0) {
-      const elapsed = Math.floor((Date.now() - room.roundStartTime) / 1000);
-      remainingTime = Math.max(0, room.roundTimer - elapsed);
-    }
+    const remainingTime = Math.max(0, room.roundTimer);
 
     const phase = remainingTime <= 60 ? 'trading' : 'news';
 
@@ -315,7 +524,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       timer: remainingTime,
       news: room.currentNews,
       phase,
-      fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(roomId) ?? []) : []
+      fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(roomId) ?? []) : [],
+      totalElapsedSeconds: room.totalElapsedSeconds
     });
   }
 
@@ -368,7 +578,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
         round: room.currentRound,
         news: room.currentNews,
         timer: room.roundTimer,
-        fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(room.id) ?? []) : []
+        fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(room.id) ?? []) : [],
+        totalElapsedSeconds: room.totalElapsedSeconds
       });
     }
   }
@@ -377,7 +588,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     // Inicializar portafolios de jugadores
     this.playerPortfolios.set(roomId, new Map());
     this.playerFixedIncome.set(roomId, new Map());
-    console.log(`Game data initialized for room ${roomId}`);
+    this.dlog(`Game data initialized for room ${roomId}`);
 
     // Inicializar acciones disponibles (999 por empresa)
     const stocks = new Map();
@@ -385,7 +596,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       stocks.set(i, 999);
     }
     this.companyStocks.set(roomId, stocks);
-    console.log(`Available stocks initialized: 999 for each company`);
+    this.dlog(`Available stocks initialized: 999 for each company`);
 
     this.roomFixedIncomeOffers.set(roomId, []);
   }
@@ -404,10 +615,10 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
         stocks: new Map()
       });
       
-      console.log(`Portfolio initialized for socket ${socketId} in room ${roomId}: $10,000 cash`);
+      this.dlog(`Portfolio initialized for socket ${socketId} in room ${roomId}: $10,000 cash`);
     } else {
       const existingPortfolio = roomPortfolios.get(socketId);
-      console.log(`Portfolio already exists for socket ${socketId} in room ${roomId}: Cash $${existingPortfolio?.cash}, Stocks: ${existingPortfolio?.stocks.size} positions`);
+      this.dlog(`Portfolio already exists for socket ${socketId} in room ${roomId}: Cash $${existingPortfolio?.cash}, Stocks: ${existingPortfolio?.stocks.size} positions`);
     }
 
     const roomFixedIncome = this.playerFixedIncome.get(roomId);
@@ -439,6 +650,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       roundStartTime: null,
       createdAt: Date.now(),
       fixedIncomeOffers: [],
+      totalElapsedSeconds: 0,
+      gameClockInterval: undefined
     };
 
     // Agregar jugador creador
@@ -551,366 +764,6 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     }
   }
 
-  @SubscribeMessage('joinWaitingRoom')
-  handleJoinWaitingRoom(client: Socket, payload: { userId: number; userName: string }) {
-    // Este método está deshabilitado - usar createRoom/joinRoom en su lugar
-    client.emit('roomError', { 
-      message: 'Método obsoleto. Usa "Crear Partida" o "Unirse a Partida" desde el lobby.' 
-    });
-  }
-
-  @SubscribeMessage('checkRoomStatus')
-  handleCheckRoomStatus(client: Socket) {
-    const roomId = this.playerSockets.get(client.id);
-    if (!roomId) {
-      client.emit('roomStatus', { inRoom: false });
-      return;
-    }
-
-    const room = this.gameRooms.get(roomId);
-    if (!room) {
-      client.emit('roomStatus', { inRoom: false });
-      return;
-    }
-
-    client.emit('roomStatus', { 
-      inRoom: true, 
-      roomId: roomId, 
-      status: room.status,
-      players: room.players.length,
-      playersList: room.players
-    });
-  }
-
-  @SubscribeMessage('gameTransaction')
-  handleGameTransaction(client: Socket, payload: any) {
-    
-    const roomId = this.playerSockets.get(client.id);
-    if (!roomId) {
-      client.emit('transactionProcessed', {
-        success: false,
-        error: 'No estás en una sala de juego',
-        message: 'Transacción no procesada: No estás en una sala de juego'
-      });
-      return;
-    }
-
-    const room = this.gameRooms.get(roomId);
-    if (!room) {
-      client.emit('transactionProcessed', {
-        success: false,
-        error: 'Sala no encontrada',
-        message: 'Transacción no procesada: Sala no encontrada'
-      });
-      return;
-    }
-
-    if (room.status !== 'playing') {
-      client.emit('transactionProcessed', {
-        success: false,
-        error: 'El juego no está activo',
-        message: 'Transacción no procesada: El juego no está activo'
-      });
-      return;
-    }
-
-    // Validar transacción
-    const isValid = this.validateTransaction(payload);
-    const companyName = this.getCompanyName(payload.companyId);
-    
-    if (isValid) {
-      // Procesar transacción real
-      try {
-        const success = this.processTransaction(roomId, client.id, payload.type, payload.companyId, payload.quantity);
-        
-        if (success) {
-          // Enviar actualización de portafolio al jugador
-          const portfolio = this.getPlayerPortfolio(roomId, client.id);
-          client.emit('portfolioUpdate', portfolio);
-          
-          // Enviar actualización de acciones disponibles a todos
-          const availableStocks = this.getAvailableStocks(roomId);
-          this.server.to(roomId).emit('stocksUpdate', availableStocks);
-          
-      this.server.to(roomId).emit('transactionProcessed', {
-        success: true,
-        playerId: payload.userId,
-        type: payload.type,
-        companyName: companyName,
-            companySymbol: this.getCompanySymbol(payload.companyId),
-        quantity: payload.quantity,
-            priceAtMoment: this.getStockPrice(payload.companyId),
-        message: `Transacción procesada exitosamente`
-      });
-        } else {
-          client.emit('transactionProcessed', {
-            success: false,
-            playerId: payload.userId,
-            error: 'Fondos insuficientes o acciones no disponibles',
-            message: `Transacción no procesada: Fondos insuficientes`
-          });
-        }
-      } catch (error) {
-        client.emit('transactionProcessed', {
-          success: false,
-          playerId: payload.userId,
-          error: 'Error al procesar la transacción',
-          message: `Transacción no procesada: Error del servidor`
-        });
-      }
-    } else {
-      // Transacción fallida
-      const errorMessage = this.getTransactionError(payload);
-      client.emit('transactionProcessed', {
-        success: false,
-        playerId: payload.userId,
-        error: errorMessage,
-        message: `Transacción no procesada: ${errorMessage}`
-      });
-    }
-  }
-
-  private validateTransaction(payload: any): boolean {
-    // Validación básica de transacción
-    if (!payload.type || !payload.quantity || !payload.companyId) {
-    return false;
-    }
-
-    // Validación simple: solo verificar que la cantidad sea positiva
-    return payload.quantity > 0;
-  }
-
-  private getTransactionError(payload: any): string {
-    if (!payload.type || !payload.quantity || !payload.companyId) {
-      return 'Datos de transacción incompletos';
-    }
-    
-    if (payload.quantity <= 0) {
-      return 'La cantidad debe ser mayor a 0';
-    }
-    
-    return 'Transacción no válida';
-  }
-
-  private getCompanyName(companyId: number): string {
-    const companies: Record<number, string> = {
-      1: 'MichiPapeles',
-      2: 'MichiHotel',
-      3: 'MichiAgro',
-      4: 'MichiTech',
-      5: 'MichiFuel'
-    };
-    return companies[companyId] ?? 'Empresa Desconocida';
-  }
-
-  private getCompanySymbol(companyId: number): string {
-    const symbols: Record<number, string> = {
-      1: 'TNV',
-      2: 'GEC',
-      3: 'HPI',
-      4: 'RTM',
-      5: 'FF',
-      6: 'ADL'
-    };
-    return symbols[companyId] ?? 'N/A';
-  }
-
-  private processTransaction(roomId: string, socketId: string, type: string, companyId: number, quantity: number): boolean {
-    const roomPortfolios = this.playerPortfolios.get(roomId);
-    const roomStocks = this.companyStocks.get(roomId);
-    
-    if (!roomPortfolios || !roomStocks) {
-      console.log(`No portfolios or stocks found for room ${roomId}`);
-      return false;
-    }
-    
-    const playerPortfolio = roomPortfolios.get(socketId);
-    if (!playerPortfolio) {
-      console.log(`No portfolio found for socket ${socketId} in room ${roomId}`);
-      return false;
-    }
-    
-    console.log(`Processing ${type} transaction for socket ${socketId}: ${quantity} shares of company ${companyId}`);
-    console.log(`Player cash: $${playerPortfolio.cash}, Available stocks: ${roomStocks.get(companyId)}`);
-    
-    const stockPrice = this.getStockPrice(companyId);
-    const totalCost = stockPrice * quantity;
-    
-    if (type === 'BUY') {
-      // Verificar fondos y acciones disponibles
-      console.log(`Buy validation: Cash $${playerPortfolio.cash} >= Cost $${totalCost}? ${playerPortfolio.cash >= totalCost}`);
-      console.log(`Stocks validation: Available ${roomStocks.get(companyId)} >= Quantity ${quantity}? ${roomStocks.get(companyId)! >= quantity}`);
-      
-      if (playerPortfolio.cash < totalCost || roomStocks.get(companyId)! < quantity) {
-        console.log(`Transaction failed: Insufficient funds or stocks`);
-        return false;
-      }
-      
-      // Procesar compra
-      playerPortfolio.cash -= totalCost;
-      const currentStocks = playerPortfolio.stocks.get(companyId) || 0;
-      playerPortfolio.stocks.set(companyId, currentStocks + quantity);
-      
-      // Reducir acciones disponibles
-      roomStocks.set(companyId, roomStocks.get(companyId)! - quantity);
-      
-      console.log(`Buy successful: Player now has $${playerPortfolio.cash} cash and ${playerPortfolio.stocks.get(companyId)} shares of company ${companyId}`);
-    } else if (type === 'SELL') {
-      // Verificar que tenga acciones para vender
-      const currentStocks = playerPortfolio.stocks.get(companyId) || 0;
-      if (currentStocks < quantity) {
-        return false;
-      }
-      
-      // Procesar venta
-      playerPortfolio.cash += totalCost;
-      playerPortfolio.stocks.set(companyId, currentStocks - quantity);
-      
-      // Aumentar acciones disponibles
-      roomStocks.set(companyId, roomStocks.get(companyId)! + quantity);
-    }
-    
-    return true;
-  }
-
-  // Almacenar precios actuales por empresa
-  private currentPrices: Map<number, number> = new Map();
-
-  private getStockPrice(companyId: number): number {
-    // Si no hay precio actual, usar precio base
-    if (!this.currentPrices.has(companyId)) {
-      const basePrices: Record<number, number> = {
-        1: 75.00,  // TechNova
-        2: 50.00,  // GreenEnergy
-        3: 75.00,  // HealthPlus
-        4: 80.00,  // RetailMax
-        5: 90.00,  // FinanceFirst
-        6: 65.00   // AutoDrive
-      };
-      this.currentPrices.set(companyId, basePrices[companyId] || 50.00);
-    }
-    return this.currentPrices.get(companyId) || 50.00;
-  }
-
-  private updateStockPrices(priceChanges: any) {
-    for (const [companyId, change] of Object.entries(priceChanges)) {
-      const newPrice = (change as any).newPrice;
-      this.currentPrices.set(parseInt(companyId), newPrice);
-      console.log(`Updated price for company ${companyId}: $${newPrice.toFixed(2)}`);
-    }
-  }
-
-  private updateAllPortfolios(roomId: string) {
-    const roomPortfolios = this.playerPortfolios.get(roomId);
-    if (!roomPortfolios) return;
-
-    for (const [socketId] of roomPortfolios) {
-      const updatedPortfolio = this.getPlayerPortfolio(roomId, socketId);
-      if (updatedPortfolio) {
-        console.log(`Sending updated portfolio to socket ${socketId}: Cash $${updatedPortfolio.cash}, Portfolio $${updatedPortfolio.portfolioValue}, Total $${updatedPortfolio.totalValue}`);
-        this.server.to(socketId).emit('portfolioUpdate', updatedPortfolio);
-      }
-    }
-  }
-
-  private getPlayerPortfolio(roomId: string, socketId: string) {
-    const roomPortfolios = this.playerPortfolios.get(roomId);
-    if (!roomPortfolios) {
-      console.log(`No room portfolios found for room ${roomId}`);
-      return null;
-    }
-    
-    const portfolio = roomPortfolios.get(socketId);
-    if (!portfolio) {
-      console.log(`No portfolio found for socket ${socketId} in room ${roomId}`);
-      return null;
-    }
-
-    const room = this.gameRooms.get(roomId);
-    const stage = room?.currentRound ?? 0;
-
-    const holdings = Array.from(portfolio.stocks.entries()).map(([companyId, quantity]) => {
-      const currentPrice = this.getStockPrice(companyId);
-      return {
-        stockId: companyId,
-        symbol: this.getCompanySymbol(companyId),
-        name: this.getCompanyName(companyId),
-        quantity,
-        currentPrice,
-        totalValue: currentPrice * quantity
-      };
-    });
-
-    const portfolioValue = holdings.reduce((total, holding) => total + holding.totalValue, 0);
-    const fixedIncomeHoldings = this.getPlayerFixedIncome(roomId, socketId);
-    const fixedIncomeValue = this.getFixedIncomeValue(roomId, socketId);
-
-    const result = {
-      cash: portfolio.cash,
-      holdings,
-      fixedIncomeHoldings: fixedIncomeHoldings.map((bond) => ({
-        offerId: bond.offerId,
-        issuer: bond.issuer,
-        name: bond.name,
-        unitPrice: bond.unitPrice,
-        interestRate: bond.interestRate,
-        remainingMonths: bond.remainingMonths,
-        quantity: bond.quantity,
-        currentValue: bond.unitPrice * bond.quantity,
-      })),
-      portfolioValue,
-      stage,
-      fixedIncomeValue,
-      totalValue: portfolio.cash + portfolioValue + fixedIncomeValue
-    };
-
-    console.log(`Portfolio for socket ${socketId}: Cash $${result.cash}, Portfolio $${result.portfolioValue}, Total $${result.totalValue}`);
-    return result;
-  }
-
-  private getAvailableStocks(roomId: string) {
-    const roomStocks = this.companyStocks.get(roomId);
-    if (!roomStocks) {
-      console.log(`No room stocks found for room ${roomId}`);
-      return {};
-    }
-    
-    const stocks: Record<number, number> = {};
-    for (const [companyId, quantity] of roomStocks) {
-      stocks[companyId] = quantity;
-      console.log(`Company ${companyId}: ${quantity} available stocks`);
-    }
-    
-    console.log(`Sending stocks update for room ${roomId}:`, stocks);
-    return stocks;
-  }
-
-
-  private findAvailableRoom(): GameRoom | null {
-    // Primero buscar salas en juego que tengan espacio
-    for (const room of this.gameRooms.values()) {
-      if ((room.status === 'playing' || room.status === 'starting') && room.players.length < 5) {
-        return room;
-      }
-    }
-    
-    // Luego buscar salas en espera
-    for (const room of this.gameRooms.values()) {
-      if (room.status === 'waiting' && room.players.length < 5) {
-        return room;
-      }
-    }
-    
-    // Si no hay salas disponibles, buscar cualquier sala activa para unirse como espectador
-    for (const room of this.gameRooms.values()) {
-      if (room.status === 'playing' || room.status === 'starting') {
-        return room;
-      }
-    }
-    
-    return null;
-  }
-
   private createNewRoom(): GameRoom {
     const roomId = `room_${Date.now()}`;
     const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -925,26 +778,13 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       roundStartTime: null,
       createdAt: Date.now(),
       fixedIncomeOffers: [],
+      totalElapsedSeconds: 0,
+      gameClockInterval: undefined
     };
 
     this.gameRooms.set(roomId, room);
     this.roomCodes.set(roomCode, roomId);
     return room;
-  }
-
-  private startGameCountdown(room: GameRoom) {
-    let countdown = 10;
-    room.status = 'starting';
-
-    const countdownInterval = setInterval(() => {
-      this.server.to(room.id).emit('gameStartCountdown', countdown);
-      countdown--;
-
-      if (countdown < 0) {
-        clearInterval(countdownInterval);
-        this.startGame(room);
-      }
-    }, 1000);
   }
 
   private startGame(room: GameRoom) {
@@ -967,13 +807,18 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     }
     
     this.server.to(room.id).emit('gameStarted');
+    // Inicializar reloj total de juego
+    room.totalElapsedSeconds = 0;
+    room.gameClockInterval = setInterval(() => {
+      room.totalElapsedSeconds += 1;
+      this.server.to(room.id).emit('gameTimer', room.totalElapsedSeconds);
+    }, 1000);
     
     // Iniciar primera ronda
     this.startRound(room);
   }
 
   private startRound(room: GameRoom) {
-
     // Limpiar intervalo anterior si existe
     if (room.roundInterval) {
       clearInterval(room.roundInterval);
@@ -999,9 +844,10 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
     this.server.to(room.id).emit('roundStarted', {
       round: room.currentRound,
-      news: news,
+      news,
       timer: room.roundTimer,
-      fixedIncomeOffers: room.fixedIncomeOffers
+      fixedIncomeOffers: room.fixedIncomeOffers,
+      totalElapsedSeconds: room.totalElapsedSeconds
     });
 
     // Timer de la ronda
@@ -1032,7 +878,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     
     this.server.to(room.id).emit('roundEnded', {
       round: room.currentRound,
-      priceChanges: priceChanges
+      priceChanges
     });
 
     // Siguiente ronda o finalizar juego
@@ -1046,6 +892,10 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
   private endGame(room: GameRoom) {
     room.status = 'finished';
+    if (room.gameClockInterval) {
+      clearInterval(room.gameClockInterval);
+      room.gameClockInterval = undefined;
+    }
     
     // Calcular resultados finales
     const results = this.calculateFinalResults(room);
@@ -1078,20 +928,18 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   private calculatePriceChanges() {
-    const companies = ['MPA', 'MHT', 'MAG', 'MTC', 'MFL'];
+    const companyIds = [1, 2, 3, 4, 5, 6];
     const changes: any = {};
     
     // Determinar si hay evento especial (5% de probabilidad)
     const specialEvent = this.getSpecialEvent();
     
     if (specialEvent) {
-      // Convertir IDs a símbolos para applySpecialEvent
-      const companySymbols = companies.map(id => this.getCompanySymbol(id));
-      return this.applySpecialEvent(companySymbols, specialEvent);
+      return this.applySpecialEvent(companyIds, specialEvent);
     }
     
     // Cambios normales basados en noticias
-    companies.forEach(companyId => {
+    companyIds.forEach(companyId => {
       const change = (Math.random() - 0.5) * 0.2; // -10% a +10%
       const oldPrice = this.getStockPrice(companyId);
       const newPrice = oldPrice * (1 + change);
@@ -1103,7 +951,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
         eventType: 'normal'
       };
       
-      console.log(`Price change for company ${companyId}: $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)} (${(change * 100).toFixed(1)}%)`);
+      this.dlog(`Price change for company ${companyId}: $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)} (${(change * 100).toFixed(1)}%)`);
     });
 
     return changes;
@@ -1118,11 +966,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     return null;
   }
 
-  private applySpecialEvent(companySymbols: string[], eventType: string) {
+  private applySpecialEvent(companyIds: number[], eventType: string) {
     const changes: any = {};
-    
-    // Usar IDs numéricos para el sistema de precios
-    const companyIds = [1, 2, 3, 4, 5, 6];
     
     companyIds.forEach(companyId => {
       const oldPrice = this.getStockPrice(companyId);
@@ -1209,6 +1054,146 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     return results
       .sort((a, b) => b.finalValue - a.finalValue)
       .map((player, index) => ({ ...player, rank: index + 1 }));
+  }
+
+  private getCompanyName(companyId: number): string {
+    const companies: Record<number, string> = {
+      1: 'MichiPapeles',
+      2: 'MichiHotel',
+      3: 'MichiAgro',
+      4: 'MichiTech',
+      5: 'MichiFuel',
+      6: 'MichiHealth'
+    };
+    return companies[companyId] ?? `Empresa ${companyId}`;
+  }
+
+  private getCompanySymbol(companyId: number): string {
+    const symbols: Record<number, string> = {
+      1: 'MPA',
+      2: 'MHT',
+      3: 'MAG',
+      4: 'MTC',
+      5: 'MFL',
+      6: 'MHL'
+    };
+    return symbols[companyId] ?? `${companyId}`;
+  }
+
+  private getStockPrice(companyId: number): number {
+    if (!this.currentPrices.has(companyId)) {
+      const basePrices: Record<number, number> = {
+        1: 80.0,
+        2: 100.0,
+        3: 70.0,
+        4: 90.0,
+        5: 110.0,
+        6: 85.0,
+      };
+      this.currentPrices.set(companyId, basePrices[companyId] || 50.0);
+    }
+    return this.currentPrices.get(companyId) || 50.0;
+  }
+
+  private updateStockPrices(priceChanges: any) {
+    for (const [companyId, change] of Object.entries(priceChanges)) {
+      const newPrice = (change as any).newPrice;
+      this.currentPrices.set(parseInt(companyId), newPrice);
+      this.dlog(`Updated price for company ${companyId}: $${newPrice.toFixed(2)}`);
+    }
+  }
+
+  private getPlayerPortfolio(roomId: string, socketId: string) {
+    const roomPortfolios = this.playerPortfolios.get(roomId);
+    if (!roomPortfolios) {
+      this.dlog(`No room portfolios found for room ${roomId}`);
+      return null;
+    }
+
+    const portfolio = roomPortfolios.get(socketId);
+    if (!portfolio) {
+      this.dlog(`No portfolio found for socket ${socketId} in room ${roomId}`);
+      return null;
+    }
+
+    const room = this.gameRooms.get(roomId);
+    const stage = room?.currentRound ?? 0;
+
+    const holdings = Array.from(portfolio.stocks.entries()).map(([companyId, quantity]) => {
+      const currentPrice = this.getStockPrice(companyId);
+      return {
+        stockId: companyId,
+        symbol: this.getCompanySymbol(companyId),
+        name: this.getCompanyName(companyId),
+        quantity,
+        currentPrice,
+        totalValue: currentPrice * quantity
+      };
+    });
+
+    const portfolioValue = holdings.reduce((total, holding) => total + holding.totalValue, 0);
+    const fixedIncomeHoldings = this.getPlayerFixedIncome(roomId, socketId);
+    const fixedIncomeValue = this.getFixedIncomeValue(roomId, socketId);
+
+    const result = {
+      cash: portfolio.cash,
+      holdings,
+      fixedIncomeHoldings: fixedIncomeHoldings.map((bond) => ({
+        offerId: bond.offerId,
+        issuer: bond.issuer,
+        name: bond.name,
+        unitPrice: bond.unitPrice,
+        interestRate: bond.interestRate,
+        remainingMonths: bond.remainingMonths,
+        quantity: bond.quantity,
+        currentValue: bond.unitPrice * bond.quantity,
+      })),
+      portfolioValue,
+      stage,
+      fixedIncomeValue,
+      totalValue: portfolio.cash + portfolioValue + fixedIncomeValue
+    };
+
+    this.dlog(`Portfolio for socket ${socketId}: Cash $${result.cash}, Portfolio $${result.portfolioValue}, Total $${result.totalValue}`);
+    return result;
+  }
+
+  private updateAllPortfolios(roomId: string) {
+    const roomPortfolios = this.playerPortfolios.get(roomId);
+    if (!roomPortfolios) return;
+
+    for (const [socketId] of roomPortfolios) {
+      const updatedPortfolio = this.getPlayerPortfolio(roomId, socketId);
+      if (updatedPortfolio) {
+        this.dlog(`Sending updated portfolio to socket ${socketId}: Cash $${updatedPortfolio.cash}, Portfolio $${updatedPortfolio.portfolioValue}, Total $${updatedPortfolio.totalValue}`);
+        this.server.to(socketId).emit('portfolioUpdate', updatedPortfolio);
+      }
+    }
+  }
+
+  private scheduleFixedIncomeOffersUpdate(roomId: string) {
+    if (this.fixedIncomeOffersUpdateTimers.has(roomId)) return;
+    const timer = setTimeout(() => {
+      this.fixedIncomeOffersUpdateTimers.delete(roomId);
+      const offers = this.roomFixedIncomeOffers.get(roomId) ?? [];
+      this.server.to(roomId).emit('fixedIncomeOffersUpdate', offers);
+    }, 100);
+    this.fixedIncomeOffersUpdateTimers.set(roomId, timer);
+  }
+
+  private startGameCountdown(room: GameRoom) {
+    let countdown = 10;
+    room.status = 'starting';
+
+    const countdownInterval = setInterval(() => {
+      this.server.to(room.id).emit('gameStartCountdown', countdown);
+      countdown--;
+
+      if (countdown < 0) {
+        clearInterval(countdownInterval);
+        this.startGame(room);
+      }
+    }, 1000);
   }
 
   getLatestResults() {
