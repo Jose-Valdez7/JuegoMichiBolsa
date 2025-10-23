@@ -155,33 +155,35 @@ export default function Lobby() {
         backgroundRepeat: 'no-repeat'
       }}
     >
-        <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
-          {/* Layout dividido en dos mitades */}
-          <div className="flex flex-col lg:flex-row gap-8 items-center">
-            {/* Mitad izquierda - Imagen de la carta del gato */}
-            <div className="w-full lg:w-1/2 flex justify-center items-center">
-              <div className="relative w-full h-full">
-                <img
-                  src="/images/cards/card-gato.png"
-                  alt="Carta del Gato"
-                  className="w-full h-full object-contain drop-shadow-2xl"
-                />
+        {/* Card para pantalla inicial */}
+        {!gameMode && (
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+            {/* Layout dividido en dos mitades */}
+            <div className="flex flex-col lg:flex-row gap-8 items-stretch min-h-[500px]">
+              {/* Mitad izquierda - Imagen de la carta del gato como fondo */}
+              <div 
+                className="w-full lg:w-1/2 min-h-[400px] lg:min-h-[500px] rounded-2xl overflow-hidden"
+                style={{
+                  backgroundImage: 'url(/images/cards/card-gato.png)',
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundRepeat: 'no-repeat'
+                }}
+              >
               </div>
-            </div>
 
-            {/* Mitad derecha - Título y botones */}
-            <div className="w-full lg:w-1/2 space-y-6">
-              <div className="text-center relative z-10">
-                <div className="w-20 h-20 bg-slate-600 rounded-full items-center justify-center mx-auto mb-4 shadow-2xl">
-                  <span className="text-3xl">🏦</span>
+              {/* Mitad derecha - Título y botones */}
+              <div className="w-full lg:w-1/2 space-y-6">
+                <div className="text-center relative z-10">
+                  <div className="w-20 h-20 bg-slate-600 rounded-full items-center justify-center mx-auto mb-4 shadow-2xl">
+                    <span className="text-3xl">🏦</span>
+                  </div>
+                  <h1 className="text-4xl font-bold text-white mb-2">
+                    💼 El Juego de la Bolsa 💼
+                  </h1>
+                  <p className="text-slate-300 text-lg">📈 Simulación Bursátil BVO Tech1 📊</p>
                 </div>
-                <h1 className="text-4xl font-bold text-white mb-2">
-                  💼 El Juego de la Bolsa 💼
-                </h1>
-                <p className="text-slate-300 text-lg">📈 Simulación Bursátil BVO Tech1 📊</p>
-              </div>
 
-              {!gameMode && (
                 <div className="space-y-4">
                   <button
                     onClick={() => setGameMode('create')}
@@ -205,25 +207,15 @@ export default function Lobby() {
                     />
                   </button>
                 </div>
-              )}
-            </div>
-          </div>
-
-        {gameMode === 'create' && (
-          <div className="flex flex-col lg:flex-row gap-8 items-start mt-8">
-            {/* Mitad izquierda - Mantener imagen del gato */}
-            <div className="w-full lg:w-1/2 flex justify-center items-center">
-              <div className="relative w-full h-full">
-                <img
-                  src="/images/cards/card-gato.png"
-                  alt="Carta del Gato"
-                  className="w-full h-full object-contain drop-shadow-2xl"
-                />
               </div>
             </div>
+          </div>
+        )}
 
-            {/* Mitad derecha - Formulario de crear partida */}
-            <div className="w-full lg:w-1/2 space-y-4 relative z-[99999]">
+        {/* Card para crear partida */}
+        {gameMode === 'create' && (
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+            <div className="space-y-4 relative z-[99999]">
             <div className="relative z-[99999] bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
               <label className="block text-white font-medium mb-2">Tu Nombre</label>
               <input
@@ -334,21 +326,10 @@ export default function Lobby() {
           </div>
         )}
 
+        {/* Card para unirse a partida */}
         {gameMode === 'join' && (
-          <div className="flex flex-col lg:flex-row gap-8 items-start mt-8">
-            {/* Mitad izquierda - Mantener imagen del gato */}
-            <div className="w-full lg:w-1/2 flex justify-center items-center">
-              <div className="relative w-full h-full">
-                <img
-                  src="/images/cards/card-gato.png"
-                  alt="Carta del Gato"
-                  className="w-full h-full object-contain drop-shadow-2xl"
-                />
-              </div>
-            </div>
-
-            {/* Mitad derecha - Formulario de unirse a partida */}
-            <div className="w-full lg:w-1/2 space-y-4 relative z-[99999]">
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+            <div className="space-y-4 relative z-[99999]">
             <div className="relative z-[99999] bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
               <label className="block text-white font-medium mb-2">Tu Nombre</label>
               <input
@@ -456,7 +437,6 @@ export default function Lobby() {
             {error}
           </div>
         )}
-      </div>
     </div>
   )
 }
