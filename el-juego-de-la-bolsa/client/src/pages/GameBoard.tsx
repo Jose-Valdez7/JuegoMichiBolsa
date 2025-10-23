@@ -249,12 +249,11 @@ export default function GameBoard() {
       console.error('Error loading companies:', error)
       // Fallback data para testing
       setCompanies([
-        { id: 1, name: 'TechNova', symbol: 'TNV', currentPrice: 105.50, basePrice: 100, sector: 'Tech' },
-        { id: 2, name: 'GreenEnergy Corp', symbol: 'GEC', currentPrice: 87.25, basePrice: 90, sector: 'Energy' },
-        { id: 3, name: 'HealthPlus Inc', symbol: 'HPI', currentPrice: 142.80, basePrice: 130, sector: 'Health' },
-        { id: 4, name: 'RetailMax', symbol: 'RTM', currentPrice: 78.90, basePrice: 85, sector: 'Retail' },
-        { id: 5, name: 'FinanceFirst', symbol: 'FF', currentPrice: 95.60, basePrice: 95, sector: 'Finance' },
-        { id: 6, name: 'AutoDrive Ltd', symbol: 'ADL', currentPrice: 112.30, basePrice: 110, sector: 'Tech' }
+        { id: 1, name: 'MichiPapeles', symbol: 'MPA', currentPrice: 80, basePrice: 80, sector: 'Papelería' },
+        { id: 2, name: 'MichiHotel', symbol: 'MHT', currentPrice: 100, basePrice: 100, sector: 'Turismo' },
+        { id: 3, name: 'MichiAgro', symbol: 'MAG', currentPrice: 70, basePrice: 70, sector: 'Agricultura' },
+        { id: 4, name: 'MichiTech', symbol: 'MTC', currentPrice: 90, basePrice: 90, sector: 'Tecnología' },
+        { id: 5, name: 'MichiFuel', symbol: 'MFL', currentPrice: 110, basePrice: 110, sector: 'Energía' }
       ])
     }
   }
@@ -296,6 +295,7 @@ export default function GameBoard() {
       alert('Error al procesar la transacción')
     }
   }
+
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)

@@ -16,7 +16,10 @@ class SocketManager {
   public getSocket(): Socket {
     if (!this.socket) {
       console.log('Creating new socket connection...')
-      this.socket = io('http://localhost:3000', {
+      // Usar variable de entorno o localhost por defecto
+      const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000'
+      
+      this.socket = io(serverUrl, {
         transports: ['websocket', 'polling'],
         withCredentials: true,
         autoConnect: true

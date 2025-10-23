@@ -351,12 +351,11 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
 
   private getCompanyName(companyId: number): string {
     const companies: Record<number, string> = {
-      1: 'TechNova',
-      2: 'GreenEnergy',
-      3: 'HealthPlus',
-      4: 'RetailMax',
-      5: 'FinanceFirst',
-      6: 'AutoDrive'
+      1: 'MichiPapeles',
+      2: 'MichiHotel',
+      3: 'MichiAgro',
+      4: 'MichiTech',
+      5: 'MichiFuel'
     };
     return companies[companyId] ?? 'Empresa Desconocida';
   }
@@ -516,7 +515,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   private calculatePriceChanges() {
-    const companies = ['TNV', 'GEC', 'HPI', 'RTM', 'FF', 'ADL'];
+    const companies = ['MPA', 'MHT', 'MAG', 'MTC', 'MFL'];
     const changes: any = {};
     
     // Determinar si hay evento especial (5% de probabilidad)
