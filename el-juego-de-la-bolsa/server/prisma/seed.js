@@ -18,9 +18,11 @@ async function main() {
   });
 
   const companies = [
-    { name: 'TechNova', symbol: 'TNV', sector: 'Tech', basePrice: 100, currentPrice: 100, actionsTotal: 100000 },
-    { name: 'GreenFoods', symbol: 'GFD', sector: 'Consumer', basePrice: 50, currentPrice: 50, actionsTotal: 120000 },
-    { name: 'AeroLift', symbol: 'AEL', sector: 'Industrial', basePrice: 75, currentPrice: 75, actionsTotal: 90000 },
+    { name: 'MichiHotel', symbol: 'MHT', sector: 'Turismo', basePrice: 100, currentPrice: 100, actionsTotal: 120000 },
+    { name: 'MichiPapeles', symbol: 'MPA', sector: 'Papelería', basePrice: 80, currentPrice: 80, actionsTotal: 100000 },
+    { name: 'MichiTech', symbol: 'MTC', sector: 'Tecnología', basePrice: 90, currentPrice: 90, actionsTotal: 110000 },
+    { name: 'MichiAgro', symbol: 'MAG', sector: 'Agricultura', basePrice: 70, currentPrice: 70, actionsTotal: 90000 },
+    { name: 'MichiFuel', symbol: 'MFL', sector: 'Energía', basePrice: 110, currentPrice: 110, actionsTotal: 95000 },
   ];
 
   for (const c of companies) {

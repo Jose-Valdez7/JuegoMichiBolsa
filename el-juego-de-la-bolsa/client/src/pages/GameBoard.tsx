@@ -406,10 +406,20 @@ export default function GameBoard() {
     }
   }, [socket, fetchNews, nav, updateFixedIncomeOffers, showRentaFijaAlert, showSystemNotification, showTransactionError, formatCurrency])
 
-  useEffect(() => {
-    const gameFinished = gamePhase === 'results' && currentRound >= TOTAL_ROUNDS
-    if (gameFinished) {
-      return
+  const loadCompanies = async () => {
+    try {
+      const response = await api.get('/api/companies')
+      setCompanies(response.data)
+    } catch (error) {
+      console.error('Error loading companies:', error)
+      // Fallback data para testing
+      setCompanies([
+        { id: 1, name: 'MichiPapeles', symbol: 'MPA', currentPrice: 80, basePrice: 80, sector: 'Papelería' },
+        { id: 2, name: 'MichiHotel', symbol: 'MHT', currentPrice: 100, basePrice: 100, sector: 'Turismo' },
+        { id: 3, name: 'MichiAgro', symbol: 'MAG', currentPrice: 70, basePrice: 70, sector: 'Agricultura' },
+        { id: 4, name: 'MichiTech', symbol: 'MTC', currentPrice: 90, basePrice: 90, sector: 'Tecnología' },
+        { id: 5, name: 'MichiFuel', symbol: 'MFL', currentPrice: 110, basePrice: 110, sector: 'Energía' }
+      ])
     }
 
     const interval = setInterval(() => {
@@ -474,6 +484,7 @@ export default function GameBoard() {
       setIsLoading(false)
     }
   }
+
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)

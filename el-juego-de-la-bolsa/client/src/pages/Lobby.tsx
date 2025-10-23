@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
 import { useSocket } from '../hooks/useSocket'
 
 const CHARACTERS = [
-  { id: 1, name: 'Ana', avatar: '👩‍💼', color: 'bg-pink-500' },
-  { id: 2, name: 'Carlos', avatar: '👨‍💻', color: 'bg-blue-500' },
-  { id: 3, name: 'María', avatar: '👩‍🔬', color: 'bg-green-500' },
-  { id: 4, name: 'Luis', avatar: '👨‍🎓', color: 'bg-purple-500' },
-  { id: 5, name: 'Sofia', avatar: '👩‍🚀', color: 'bg-orange-500' }
+  { id: 1, name: 'Ana', avatar: '/images/characters/personaje1.png', color: 'bg-pink-500' },
+  { id: 2, name: 'Carlos', avatar: '/images/characters/personaje2.png', color: 'bg-blue-500' },
+  { id: 3, name: 'María', avatar: '/images/characters/personaje3.png', color: 'bg-green-500' },
+  { id: 4, name: 'Luis', avatar: '/images/characters/personaje4.png', color: 'bg-purple-500' },
+  { id: 5, name: 'Sofia', avatar: '/images/characters/personaje5.png', color: 'bg-orange-500' },
+  { id: 6, name: 'Alex', avatar: '/images/characters/personaje6.png', color: 'bg-red-500' }
 ]
 
 export default function Lobby() {
@@ -20,7 +20,7 @@ export default function Lobby() {
   const [error, setError] = useState('')
   const [generatedCode, setGeneratedCode] = useState('')
   const [takenCharacters, setTakenCharacters] = useState<number[]>([])
-  
+
   const socket = useSocket()
   const navigate = useNavigate()
 
@@ -43,7 +43,7 @@ export default function Lobby() {
     socket.on('playerJoined', (data: any) => {
       console.log('Player joined:', data)
       setError('')
-      
+
       // Actualizar personajes tomados
       const taken = data.players.map((p: any) => p.characterId).filter((id: number) => id !== undefined)
       setTakenCharacters(taken)
@@ -85,9 +85,9 @@ export default function Lobby() {
     try {
       // Generar código único de 6 caracteres
       const code = Math.random().toString(36).substring(2, 8).toUpperCase()
-      
+
       if (socket) {
-        socket.emit('createRoom', { 
+        socket.emit('createRoom', {
           playerName: playerName.trim(),
           roomCode: code,
           characterId: selectedCharacter
@@ -117,7 +117,7 @@ export default function Lobby() {
 
     try {
       if (socket) {
-        socket.emit('joinRoom', { 
+        socket.emit('joinRoom', {
           playerName: playerName.trim(),
           roomCode: roomCode.trim().toUpperCase(),
           characterId: selectedCharacter
@@ -146,91 +146,140 @@ export default function Lobby() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center p-4">
-      <motion.div
-        className="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-8 max-w-md w-full border border-slate-700"
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-      >
-        <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
-            🏦
-          </div>
-          <h1 className="text-2xl font-bold text-white mb-2">El Juego de la Bolsa</h1>
-          <p className="text-slate-400">Simulación Bursátil BVO Tech1</p>
-        </div>
-
+    <div
+      className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden"
+      style={{
+        backgroundImage: 'url(/images/ui/fondo-principal.png)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat'
+      }}
+    >
+        {/* Card para pantalla inicial */}
         {!gameMode && (
-          <div className="space-y-4">
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setGameMode('create')}
-              className="w-full bg-green-600 hover:bg-green-700 text-white py-4 px-6 rounded-lg font-semibold transition-colors"
-            >
-              🎮 Crear Partida
-            </motion.button>
-            
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setGameMode('join')}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 px-6 rounded-lg font-semibold transition-colors"
-            >
-              🔗 Unirse a Partida
-            </motion.button>
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+            {/* Layout dividido en dos mitades */}
+            <div className="flex flex-col lg:flex-row gap-8 items-stretch min-h-[500px]">
+              {/* Mitad izquierda - Imagen de la carta del gato como fondo */}
+              <div 
+                className="w-full lg:w-1/2 min-h-[400px] lg:min-h-[500px] rounded-2xl overflow-hidden"
+                style={{
+                  backgroundImage: 'url(/images/cards/card-gato.png)',
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundRepeat: 'no-repeat'
+                }}
+              >
+              </div>
+
+              {/* Mitad derecha - Título y botones */}
+              <div className="w-full lg:w-1/2 space-y-6">
+                <div className="text-center relative z-10">
+                  <div className="w-20 h-20 bg-slate-600 rounded-full items-center justify-center mx-auto mb-4 shadow-2xl">
+                    <span className="text-3xl">🏦</span>
+                  </div>
+                  <h1 className="text-4xl font-bold text-white mb-2">
+                    💼 El Juego de la Bolsa 💼
+                  </h1>
+                  <p className="text-slate-300 text-lg">📈 Simulación Bursátil BVO Tech1 📊</p>
+                </div>
+
+                <div className="space-y-4">
+                  <button
+                    onClick={() => setGameMode('create')}
+                    className="w-full transition-transform hover:scale-105"
+                  >
+                    <img
+                      src="/images/buttons/crear-partida.png"
+                      alt="Crear Partida"
+                      className="w-full h-16 object-contain"
+                    />
+                  </button>
+
+                  <button
+                    onClick={() => setGameMode('join')}
+                    className="w-full transition-transform hover:scale-105"
+                  >
+                    <img
+                      src="/images/buttons/unirse-partida.png"
+                      alt="Unirse a Partida"
+                      className="w-full h-16 object-contain"
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
+        {/* Card para crear partida */}
         {gameMode === 'create' && (
-          <motion.div
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="space-y-4"
-          >
-            <div>
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+            <div className="space-y-4 relative z-[99999]">
+            <div className="relative z-[99999] bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
               <label className="block text-white font-medium mb-2">Tu Nombre</label>
               <input
                 type="text"
                 value={playerName}
                 onChange={(e) => setPlayerName(e.target.value)}
                 placeholder="Ingresa tu nombre"
-                className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none"
+                className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none relative z-[99999]"
                 maxLength={20}
+                style={{ zIndex: 99999 }}
               />
             </div>
 
             <div>
-              <label className="block text-white font-medium mb-3">Selecciona tu Personaje</label>
-              <div className="grid grid-cols-5 gap-2">
+              <label className="block text-white font-bold mb-4 text-xl text-center">
+                ✨ Selecciona tu Personaje ✨
+              </label>
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-6 p-8 bg-slate-700/60 rounded-3xl border-2 border-slate-600 shadow-2xl relative">
                 {CHARACTERS.map((character) => {
                   const isTaken = takenCharacters.includes(character.id)
                   const isSelected = selectedCharacter === character.id
-                  
+
                   return (
-                    <motion.button
+                    <button
                       key={character.id}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
                       onClick={() => !isTaken && setSelectedCharacter(character.id)}
                       disabled={isTaken}
                       className={`
-                        p-3 rounded-lg border-2 transition-all
-                        ${isSelected 
-                          ? 'border-blue-400 bg-blue-500/20' 
-                          : isTaken 
-                            ? 'border-red-400 bg-red-500/20 opacity-50 cursor-not-allowed'
-                            : 'border-slate-600 bg-slate-700 hover:border-blue-400 hover:bg-slate-600'
+                        p-6 rounded-3xl border-4 transition-all duration-300 relative overflow-hidden transform h-32 w-full
+                        ${isSelected
+                          ? 'border-blue-400 shadow-2xl shadow-blue-500/60 scale-105 ring-4 ring-blue-500/30'
+                          : isTaken
+                            ? 'border-red-400 opacity-50 cursor-not-allowed grayscale'
+                            : 'border-slate-600 hover:border-blue-400 hover:shadow-xl hover:shadow-blue-500/40 hover:scale-105 hover:ring-2 hover:ring-blue-500/20'
                         }
                       `}
+                      style={{
+                        backgroundImage: `url(${character.avatar})`,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        backgroundRepeat: 'no-repeat',
+                        backgroundBlendMode: 'overlay'
+                      }}
                     >
-                      <div className="text-2xl mb-1">{character.avatar}</div>
-                      <div className="text-xs text-white font-medium">{character.name}</div>
+                      {/* Gradiente overlay para mejor legibilidad */}
+                      {/* Gradientes ELIMINADOS para evitar interferencia con inputs */}
+
+                      {/* Contenido del botón */}
+                      <div className="relative z-10 flex flex-col items-center justify-end h-full pb-2">
+                        {isSelected && (
+                          <div className="text-sm text-blue-300 font-semibold animate-pulse bg-blue-500/20 px-3 py-1 rounded-full">
+                            ✓ Seleccionado
+                          </div>
+                        )}
+                        {isTaken && (
+                          <div className="text-sm text-red-300 font-semibold bg-red-500/20 px-3 py-1 rounded-full">
+                            ✗ Ocupado
+                          </div>
+                        )}
+                      </div>
                       {isTaken && (
                         <div className="text-xs text-red-400 mt-1">Ocupado</div>
                       )}
-                    </motion.button>
+                    </button>
                   )
                 })}
               </div>
@@ -258,15 +307,13 @@ export default function Lobby() {
             )}
 
             {!generatedCode && (
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
+              <button
                 onClick={handleCreateGame}
                 disabled={isLoading}
                 className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white py-3 px-6 rounded-lg font-semibold transition-colors"
               >
                 {isLoading ? '⏳ Creando...' : '🎮 Crear Partida'}
-              </motion.button>
+              </button>
             )}
 
             <button
@@ -275,83 +322,103 @@ export default function Lobby() {
             >
               ← Volver
             </button>
-          </motion.div>
+            </div>
+          </div>
         )}
 
+        {/* Card para unirse a partida */}
         {gameMode === 'join' && (
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="space-y-4"
-          >
-            <div>
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+            <div className="space-y-4 relative z-[99999]">
+            <div className="relative z-[99999] bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
               <label className="block text-white font-medium mb-2">Tu Nombre</label>
               <input
                 type="text"
                 value={playerName}
                 onChange={(e) => setPlayerName(e.target.value)}
                 placeholder="Ingresa tu nombre"
-                className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none"
+                className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none relative z-[99999]"
                 maxLength={20}
+                style={{ zIndex: 99999 }}
               />
             </div>
 
-            <div>
+            <div className="relative z-[99999] bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
               <label className="block text-white font-medium mb-2">Código de la Partida</label>
               <input
                 type="text"
                 value={roomCode}
                 onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
                 placeholder="Ingresa el código"
-                className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none font-mono text-center text-lg"
+                className="w-full bg-slate-700 text-white px-4 py-3 rounded-lg border border-slate-600 focus:border-blue-500 focus:outline-none font-mono text-center text-lg relative z-[99999]"
                 maxLength={6}
+                style={{ zIndex: 99999 }}
               />
             </div>
 
             <div>
-              <label className="block text-white font-medium mb-3">Selecciona tu Personaje</label>
-              <div className="grid grid-cols-5 gap-2">
+              <label className="block text-white font-bold mb-4 text-xl text-center">
+                ✨ Selecciona tu Personaje ✨
+              </label>
+              <div className="grid grid-cols-3 md:grid-cols-6 gap-6 p-8 bg-slate-700/60 rounded-3xl border-2 border-slate-600 shadow-2xl relative">
                 {CHARACTERS.map((character) => {
                   const isTaken = takenCharacters.includes(character.id)
                   const isSelected = selectedCharacter === character.id
-                  
+
                   return (
-                    <motion.button
+                    <button
                       key={character.id}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
                       onClick={() => !isTaken && setSelectedCharacter(character.id)}
                       disabled={isTaken}
                       className={`
-                        p-3 rounded-lg border-2 transition-all
-                        ${isSelected 
-                          ? 'border-blue-400 bg-blue-500/20' 
-                          : isTaken 
-                            ? 'border-red-400 bg-red-500/20 opacity-50 cursor-not-allowed'
-                            : 'border-slate-600 bg-slate-700 hover:border-blue-400 hover:bg-slate-600'
+                        p-6 rounded-3xl border-4 transition-all duration-300 relative overflow-hidden transform h-32 w-full
+                        ${isSelected
+                          ? 'border-blue-400 shadow-2xl shadow-blue-500/60 scale-105 ring-4 ring-blue-500/30'
+                          : isTaken
+                            ? 'border-red-400 opacity-50 cursor-not-allowed grayscale'
+                            : 'border-slate-600 hover:border-blue-400 hover:shadow-xl hover:shadow-blue-500/40 hover:scale-105 hover:ring-2 hover:ring-blue-500/20'
                         }
                       `}
+                      style={{
+                        backgroundImage: `url(${character.avatar})`,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                        backgroundRepeat: 'no-repeat',
+                        backgroundBlendMode: 'overlay'
+                      }}
                     >
-                      <div className="text-2xl mb-1">{character.avatar}</div>
-                      <div className="text-xs text-white font-medium">{character.name}</div>
+                      {/* Gradiente overlay para mejor legibilidad */}
+                      {/* Gradientes ELIMINADOS para evitar interferencia con inputs */}
+
+                      {/* Contenido del botón */}
+                      <div className="relative z-10 flex flex-col items-center justify-end h-full pb-2">
+                        {isSelected && (
+                          <div className="text-sm text-blue-300 font-semibold animate-pulse bg-blue-500/20 px-3 py-1 rounded-full">
+                            ✓ Seleccionado
+                          </div>
+                        )}
+                        {isTaken && (
+                          <div className="text-sm text-red-300 font-semibold bg-red-500/20 px-3 py-1 rounded-full">
+                            ✗ Ocupado
+                          </div>
+                        )}
+                      </div>
                       {isTaken && (
                         <div className="text-xs text-red-400 mt-1">Ocupado</div>
                       )}
-                    </motion.button>
+                    </button>
                   )
                 })}
               </div>
             </div>
 
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
+            <button
               onClick={handleJoinGame}
               disabled={isLoading}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white py-3 px-6 rounded-lg font-semibold transition-colors"
             >
               {isLoading ? '⏳ Uniéndose...' : '🔗 Unirse a Partida'}
-            </motion.button>
+            </button>
 
             <button
               onClick={resetForm}
@@ -359,19 +426,17 @@ export default function Lobby() {
             >
               ← Volver
             </button>
-          </motion.div>
+            </div>
+          </div>
         )}
 
         {error && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
+          <div
             className="bg-red-900/30 border border-red-500 text-red-300 px-4 py-3 rounded-lg text-sm"
           >
             {error}
-          </motion.div>
+          </div>
         )}
-      </motion.div>
     </div>
   )
 }
