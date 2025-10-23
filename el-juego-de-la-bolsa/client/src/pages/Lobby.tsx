@@ -146,23 +146,26 @@ export default function Lobby() {
   }
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden"
-      style={{
-        backgroundImage: 'url(/images/ui/fondo-principal.png)',
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat'
-      }}
-    >
+    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Fondo con blur */}
+      <div 
+        className="absolute inset-0"
+        style={{
+          backgroundImage: 'url(/images/ui/fondo-principal.png)',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+          filter: 'blur(5px)'
+        }}
+      ></div>
         {/* Card para pantalla inicial */}
         {!gameMode && (
-          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
-            {/* Layout dividido en dos mitades */}
-            <div className="flex flex-col lg:flex-row gap-8 items-stretch min-h-[500px]">
-              {/* Mitad izquierda - Imagen de la carta del gato como fondo */}
+          <div className="bg-slate-800/80 backdrop-blur-xl rounded-3xl shadow-2xl max-w-6xl w-full overflow-hidden relative border-2 border-slate-600">
+            {/* Layout dividido en dos mitades sin gap */}
+            <div className="flex flex-col lg:flex-row min-h-[600px]">
+              {/* Mitad izquierda - Imagen ocupando toda la mitad */}
               <div 
-                className="w-full lg:w-1/2 min-h-[400px] lg:min-h-[500px] rounded-2xl overflow-hidden"
+                className="w-full lg:w-1/2 relative"
                 style={{
                   backgroundImage: 'url(/images/cards/card-gato.png)',
                   backgroundSize: 'cover',
@@ -173,18 +176,22 @@ export default function Lobby() {
               </div>
 
               {/* Mitad derecha - Título y botones */}
-              <div className="w-full lg:w-1/2 space-y-6">
-                <div className="text-center relative z-10">
-                  <div className="w-20 h-20 bg-slate-600 rounded-full items-center justify-center mx-auto mb-4 shadow-2xl">
-                    <span className="text-3xl">🏦</span>
+              <div className="w-full lg:w-1/2 flex flex-col justify-center items-center p-12 space-y-8">
+                <div className="text-center">
+                  <div className="mb-6">
+                    <img
+                      src="/images/companies/logo-vector.png"
+                      alt="Logo de la Empresa"
+                      className="h-64 mx-auto object-contain"
+                    />
                   </div>
-                  <h1 className="text-4xl font-bold text-white mb-2">
+                  <h1 className="text-3xl font-bold text-white mb-3">
                     💼 El Juego de la Bolsa 💼
                   </h1>
-                  <p className="text-slate-300 text-lg">📈 Simulación Bursátil BVO Tech1 📊</p>
+              
                 </div>
 
-                <div className="space-y-4">
+                <div className="w-full space-y-6">
                   <button
                     onClick={() => setGameMode('create')}
                     className="w-full transition-transform hover:scale-105"
@@ -192,7 +199,7 @@ export default function Lobby() {
                     <img
                       src="/images/buttons/crear-partida.png"
                       alt="Crear Partida"
-                      className="w-full h-16 object-contain"
+                      className="w-full h-20 object-contain"
                     />
                   </button>
 
@@ -203,7 +210,7 @@ export default function Lobby() {
                     <img
                       src="/images/buttons/unirse-partida.png"
                       alt="Unirse a Partida"
-                      className="w-full h-16 object-contain"
+                      className="w-full h-20 object-contain"
                     />
                   </button>
                 </div>
@@ -266,7 +273,7 @@ export default function Lobby() {
                       {/* Contenido del botón */}
                       <div className="relative z-10 flex flex-col items-center justify-end h-full pb-2">
                         {isSelected && (
-                          <div className="text-sm text-blue-300 font-semibold animate-pulse bg-blue-500/20 px-3 py-1 rounded-full">
+                          <div className="text-sm text-white font-bold animate-pulse bg-green-600 px-4 py-2 rounded-full shadow-lg border-2 border-green-400">
                             ✓ Seleccionado
                           </div>
                         )}
@@ -310,9 +317,13 @@ export default function Lobby() {
               <button
                 onClick={handleCreateGame}
                 disabled={isLoading}
-                className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white py-3 px-6 rounded-lg font-semibold transition-colors"
+                className="w-full transition-transform hover:scale-105"
               >
-                {isLoading ? '⏳ Creando...' : '🎮 Crear Partida'}
+                <img
+                  src="/images/buttons/crear-partida.png"
+                  alt="Crear Partida"
+                  className="w-full h-16 object-contain"
+                />
               </button>
             )}
 
@@ -393,7 +404,7 @@ export default function Lobby() {
                       {/* Contenido del botón */}
                       <div className="relative z-10 flex flex-col items-center justify-end h-full pb-2">
                         {isSelected && (
-                          <div className="text-sm text-blue-300 font-semibold animate-pulse bg-blue-500/20 px-3 py-1 rounded-full">
+                          <div className="text-sm text-white font-bold animate-pulse bg-green-600 px-4 py-2 rounded-full shadow-lg border-2 border-green-400">
                             ✓ Seleccionado
                           </div>
                         )}
@@ -415,9 +426,13 @@ export default function Lobby() {
             <button
               onClick={handleJoinGame}
               disabled={isLoading}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white py-3 px-6 rounded-lg font-semibold transition-colors"
+              className="w-full transition-transform hover:scale-105"
             >
-              {isLoading ? '⏳ Uniéndose...' : '🔗 Unirse a Partida'}
+              <img
+                src="/images/buttons/unirse-partida.png"
+                alt="Unirse a Partida"
+                className="w-full h-16 object-contain"
+              />
             </button>
 
             <button

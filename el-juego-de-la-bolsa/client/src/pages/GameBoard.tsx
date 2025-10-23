@@ -13,9 +13,7 @@ import NewsReview from '../components/NewsReview'
 import { usePlayerPortfolio } from '../store/usePlayerPortfolio'
 import { FixedIncomeOffer, PlayerState } from '../types/game'
 
-const isDevelopmentEnv = typeof import.meta !== 'undefined' && typeof import.meta.env !== 'undefined'
-  ? import.meta.env.MODE !== 'production'
-  : false
+const isDevelopmentEnv = process.env.NODE_ENV !== 'production'
 
 const debugLog = (...args: unknown[]) => {
   if (isDevelopmentEnv) {
@@ -406,6 +404,15 @@ export default function GameBoard() {
     }
   }, [socket, fetchNews, nav, updateFixedIncomeOffers, showRentaFijaAlert, showSystemNotification, showTransactionError, formatCurrency])
 
+  // Timer effect
+  useEffect(() => {
+    const interval = setInterval(() => {
+      totalElapsedSecondsRef.current += 1
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [gamePhase, currentRound])
+
   const loadCompanies = async () => {
     try {
       const response = await api.get('/api/companies')
@@ -421,31 +428,8 @@ export default function GameBoard() {
         { id: 5, name: 'MichiFuel', symbol: 'MFL', currentPrice: 110, basePrice: 110, sector: 'Energía' }
       ])
     }
-
-    const interval = setInterval(() => {
-      totalElapsedSecondsRef.current += 1
-    }, 1000)
-
-    return () => clearInterval(interval)
-  }, [gamePhase, currentRound])
-
-  const loadCompanies = async () => {
-    // Usar datos de fallback por defecto para asegurar que siempre tengamos las 6 empresas
-    const fallbackCompanies = [
-      { id: 1, name: 'TechNova', symbol: 'TNV', currentPrice: 75.00, basePrice: 75.00, sector: 'Tech' },
-      { id: 2, name: 'GreenEnergy Corp', symbol: 'GEC', currentPrice: 50.00, basePrice: 50.00, sector: 'Energy' },
-      { id: 3, name: 'HealthPlus Inc', symbol: 'HPI', currentPrice: 75.00, basePrice: 75.00, sector: 'Health' },
-      { id: 4, name: 'RetailMax', symbol: 'RTM', currentPrice: 80.00, basePrice: 80.00, sector: 'Retail' },
-      { id: 5, name: 'FinanceFirst', symbol: 'FF', currentPrice: 90.00, basePrice: 90.00, sector: 'Finance' },
-      { id: 6, name: 'AutoDrive Ltd', symbol: 'ADL', currentPrice: 65.00, basePrice: 65.00, sector: 'Tech' }
-    ]
-    
-    console.log('Setting fallback companies:', fallbackCompanies.length, 'companies')
-    setCompanies(fallbackCompanies)
-    
-    // No intentar cargar del servidor por ahora para evitar problemas
-    console.log('Using fallback companies only')
   }
+
 
   const loadPortfolio = async () => {
     try {

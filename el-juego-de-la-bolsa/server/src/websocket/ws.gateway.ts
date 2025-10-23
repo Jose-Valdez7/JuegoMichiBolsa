@@ -1078,7 +1078,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   }
 
   private calculatePriceChanges() {
-    const companies = ['MPA', 'MHT', 'MAG', 'MTC', 'MFL'];
+    const companies = [1, 2, 3, 4, 5]; // IDs numéricos de las compañías
     const changes: any = {};
     
     // Determinar si hay evento especial (5% de probabilidad)
