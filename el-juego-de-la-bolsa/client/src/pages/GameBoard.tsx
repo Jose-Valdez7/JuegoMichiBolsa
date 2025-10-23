@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { motion } from 'framer-motion'
 import { useGame } from '../store/useGame'
 import { useSocket } from '../hooks/useSocket'
-import { Link, useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
 import { api } from '../utils/api'
 import StockChart from '../components/StockChart'
 import TransactionHistory from '../components/TransactionHistory'
@@ -10,6 +10,18 @@ import TradingInterface from '../components/TradingInterface'
 import GameHeader from '../components/GameHeader'
 import GameNotifications, { useNotifications } from '../components/GameNotifications'
 import NewsReview from '../components/NewsReview'
+import { usePlayerPortfolio } from '../store/usePlayerPortfolio'
+import { FixedIncomeOffer, PlayerState } from '../types/game'
+
+const isDevelopmentEnv = typeof import.meta !== 'undefined' && typeof import.meta.env !== 'undefined'
+  ? import.meta.env.MODE !== 'production'
+  : false
+
+const debugLog = (...args: unknown[]) => {
+  if (isDevelopmentEnv) {
+    console.log(...args)
+  }
+}
 
 interface Company {
   id: number
@@ -18,24 +30,20 @@ interface Company {
   currentPrice: number
   basePrice: number
   sector: string
-}
-
-interface Portfolio {
-  cashBalance: number
-  totalValue: number
-  positions: Array<{
-    company: Company
-    quantity: number
-  }>
+  availableStocks?: number
 }
 
 export default function GameBoard() {
   const { news, fetchNews, startGame } = useGame()
+  const navigate = useNavigate()
   const [companies, setCompanies] = useState<Company[]>([])
-  const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null)
   const [quantity, setQuantity] = useState(1)
+  const TOTAL_ROUNDS = 5
   const [roundTimer, setRoundTimer] = useState(60)
+  const totalElapsedSecondsRef = useRef(0)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [currentRound, setCurrentRound] = useState(1)
   const [gamePhase, setGamePhase] = useState<'playing' | 'news' | 'trading' | 'results'>('playing')
   const [isRoundActive, setIsRoundActive] = useState(true)
@@ -43,6 +51,14 @@ export default function GameBoard() {
   const [showNewsReview, setShowNewsReview] = useState(false)
   const [currentNews, setCurrentNews] = useState<any[]>([])
   const [soundEnabled, setSoundEnabled] = useState(true)
+  const [fixedIncomeOffers, setFixedIncomeOffers] = useState<FixedIncomeOffer[]>([])
+  const [fixedIncomeOrders, setFixedIncomeOrders] = useState<Record<string, number>>({})
+  const {
+    state: playerState,
+    syncFromServer,
+    updateStage,
+    applyPriceMap
+  } = usePlayerPortfolio()
   
   const socket = useSocket()
   const nav = useNavigate()
@@ -57,70 +73,146 @@ export default function GameBoard() {
     showSpecialEventNotification
   } = useNotifications()
 
+  const hasShownFixedIncomeAlert = useRef(false)
+
+  const updateFixedIncomeOffers = useCallback((offers: FixedIncomeOffer[] = []) => {
+    setFixedIncomeOffers(offers)
+    setFixedIncomeOrders((previous) => {
+      const next: Record<string, number> = {}
+      offers.forEach((offer) => {
+        next[offer.id] = previous[offer.id] ?? 0
+      })
+      return next
+    })
+  }, [])
+
+  const handleFixedIncomeInputChange = (offerId: string, value: number) => {
+    const sanitized = Number.isNaN(value) ? 0 : Math.max(0, Math.floor(value))
+    setFixedIncomeOrders((previous) => ({
+      ...previous,
+      [offerId]: sanitized
+    }))
+  }
+
+  const handleFixedIncomePurchase = (offerId: string) => {
+    if (!socket) {
+      showTransactionError('No hay conexión con el servidor')
+      return
+    }
+
+    if (currentRound !== 1) {
+      showTransactionError('La compra de renta fija solo está disponible en la jugada 1')
+      return
+    }
+
+    const offer = fixedIncomeOffers.find((item) => item.id === offerId)
+    if (!offer) {
+      showTransactionError('Emisión no disponible')
+      return
+    }
+
+    const quantity = fixedIncomeOrders[offerId] ?? 0
+    if (quantity <= 0) {
+      showTransactionError('Ingresa una cantidad mayor a cero')
+      return
+    }
+
+    if (quantity > offer.remainingUnits) {
+      showTransactionError('No hay suficientes títulos disponibles')
+      return
+    }
+
+    socket.emit('purchaseFixedIncome', {
+      offerId,
+      quantity
+    })
+  }
+
+  const formatCurrency = useCallback((value: number) => {
+    return value.toLocaleString('es-EC', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2
+    })
+  }, [])
+
   useEffect(() => {
-    console.log('GameBoard mounted, loading initial data...')
+    debugLog('GameBoard mounted, loading initial data...')
     fetchNews()
     loadCompanies()
     loadPortfolio()
     startGame()
   }, [])
 
+  // Debug: Mostrar empresas cargadas
+  useEffect(() => {
+    debugLog('Companies state updated:', companies.length, 'companies:', companies)
+  }, [companies])
+
   useEffect(() => {
     if (!socket) {
-      console.log('Socket not available yet')
+      debugLog('Socket not available yet')
       return
     }
 
-    console.log('Setting up socket listeners...')
+    debugLog('Setting up socket listeners...')
 
-    // Debug: Escuchar todos los eventos del socket
-    socket.onAny((eventName, ...args) => {
-      console.log(`Socket event received: ${eventName}`, args)
-    })
+    const handleAnyEvent = (eventName: string, ...args: unknown[]) => {
+      debugLog(`Socket event received: ${eventName}`, args)
+    }
+
+    if (isDevelopmentEnv) {
+      socket.onAny(handleAnyEvent)
+    }
 
     // Manejar inicio del juego desde la sala de espera
     socket.on('gameStarted', () => {
-      console.log('Game started! Redirecting to game...')
-      console.log('Setting game phase to playing and round active to true')
+      debugLog('Game started! Redirecting to game...')
+      debugLog('Setting game phase to playing and round active to true')
       // El juego ya comenzó, mantener en GameBoard
       setGamePhase('playing')
       setIsRoundActive(true)
+      totalElapsedSecondsRef.current = 0
+      hasShownFixedIncomeAlert.current = false
+      updateFixedIncomeOffers([])
     })
 
     socket.on('playersUpdate', (players: any[]) => {
-      console.log('Players update received:', players)
+      debugLog('Players update received:', players)
     })
 
     socket.on('gameStartCountdown', (seconds: number) => {
-      console.log('Game start countdown:', seconds)
+      debugLog('Game start countdown:', seconds)
     })
 
     socket.on('roomStatus', (data: any) => {
-      console.log('Room status:', data)
+      debugLog('Room status:', data)
       if (!data.inRoom) {
-        console.log('Not in any room, redirecting to lobby')
+        debugLog('Not in any room, redirecting to lobby')
         navigate('/')
       }
     })
 
     // El cliente ya debería estar en una sala desde el lobby
-    console.log('GameBoard mounted, socket connected')
+    debugLog('GameBoard mounted, socket connected')
 
     // Verificar si estamos en una sala, si no, intentar unirse
     socket.emit('checkRoomStatus')
     
     // Solicitar el estado actual de la ronda al entrar
-    console.log('Requesting round state...')
+    debugLog('Requesting round state...')
     socket.emit('requestRoundState')
 
-    socket.on('roundState', (data: { status: string; round: number; timer: number; news: any; phase: 'news' | 'trading' | 'playing' }) => {
-      console.log('Received round state:', data)
+    socket.on('roundState', (data: { status: string; round: number; timer: number; news: any; phase: 'news' | 'trading' | 'playing'; fixedIncomeOffers?: FixedIncomeOffer[] }) => {
+      debugLog('Received round state:', data)
       setCurrentRound(data.round || 1)
       setRoundTimer(data.timer || 0)
       setCurrentNews(data.news || [])
+      updateStage(data.round || 1)
+      updateFixedIncomeOffers(data.fixedIncomeOffers ?? [])
 
       if (data.status === 'playing' || data.status === 'starting') {
-        console.log('Game is active, setting phase to:', data.phase)
+        debugLog('Game is active, setting phase to:', data.phase)
         if (data.phase === 'news') {
           setGamePhase('news')
           setShowTradingInterface(false)
@@ -145,21 +237,33 @@ export default function GameBoard() {
     })
 
     socket.on('roundTimer', (seconds: number) => {
-      console.log('Received round timer:', seconds)
+      debugLog('Received round timer:', seconds)
       setRoundTimer(seconds)
+      
+      // Actualizar fase basada en el tiempo restante
+      if (seconds > 60) {
+        setGamePhase('news')
+        setShowTradingInterface(false)
+      } else {
+        setGamePhase('trading')
+        setShowTradingInterface(true)
+      }
     })
 
-    socket.on('roundStarted', (data: { round: number; news: any; timer: number }) => {
-      console.log('Round started:', data)
+    socket.on('roundStarted', (data: { round: number; news: any; timer: number; fixedIncomeOffers?: FixedIncomeOffer[] }) => {
+      debugLog('Round started:', data)
       setCurrentRound(data.round)
       setRoundTimer(data.timer)
       setGamePhase('news')
       setIsRoundActive(true)
       setCurrentNews(data.news || [])
-      
+      updateFixedIncomeOffers(data.fixedIncomeOffers ?? [])
+
       // Mostrar alerta de renta fija en la primera jugada
-      if (data.round === 1) {
-        showRentaFijaAlert(['ZAIMELLA', 'PRONACA'])
+      if (data.round === 1 && !hasShownFixedIncomeAlert.current && (data.fixedIncomeOffers?.length ?? 0) > 0) {
+        showRentaFijaAlert(data.fixedIncomeOffers!.map((offer) => offer.issuer))
+        hasShownFixedIncomeAlert.current = true
+        totalElapsedSecondsRef.current = 0
       }
       
       // Actualizar noticias del juego
@@ -173,8 +277,8 @@ export default function GameBoard() {
       }, 10000)
     })
 
-    socket.on('roundEnded', (data: { round: number; priceChanges: any }) => {
-      console.log('Round ended:', data)
+    socket.on('roundEnded', (data: { round: number; priceChanges: Record<string, { newPrice: number }> }) => {
+      debugLog('Round ended:', data)
       setGamePhase('results')
       setIsRoundActive(false)
       setShowTradingInterface(false)
@@ -192,18 +296,19 @@ export default function GameBoard() {
       }
       
       // Actualizar precios basado en las fluctuaciones
-      Object.keys(data.priceChanges).forEach(symbol => {
-        const change = data.priceChanges[symbol]
-        setCompanies(prev => prev.map(c => 
-          c.symbol === symbol ? { ...c, currentPrice: change.newPrice } : c
-        ))
+      const priceMap: Record<number, number> = {}
+      Object.entries(data.priceChanges).forEach(([key, change]) => {
+        const companyId = Number(key)
+        priceMap[companyId] = change.newPrice
       })
-      
-      // Recalcular portfolio después de cambios de precios
-      setTimeout(() => {
-        loadPortfolio()
-        showSystemNotification('Portfolio actualizado con nuevos precios')
-      }, 2000)
+
+      setCompanies((prevCompanies: Company[]) => prevCompanies.map((company: Company) => {
+        const price = priceMap[company.id]
+        return price ? { ...company, currentPrice: price } : company
+      }))
+
+      applyPriceMap(priceMap)
+      showSystemNotification('Portfolio actualizado con nuevos precios')
       
       // Mostrar resultados por 5 segundos
       setTimeout(() => {
@@ -211,8 +316,29 @@ export default function GameBoard() {
       }, 5000)
     })
 
+    socket.on('fixedIncomeOffersUpdate', (offers: FixedIncomeOffer[]) => {
+      debugLog('Fixed income offers update:', offers)
+      updateFixedIncomeOffers(offers)
+    })
+
+    socket.on('fixedIncomePurchaseResult', (result: { success: boolean; error?: string; offer?: { id: string; name: string; issuer?: string }; quantity?: number }) => {
+      if (result.success && result.offer && result.quantity) {
+        showSystemNotification(`Compra de renta fija realizada: ${result.quantity} de ${result.offer.name}`)
+        setFixedIncomeOrders((previous) => ({
+          ...previous,
+          [result.offer!.id]: 0
+        }))
+      } else if (result.error) {
+        showTransactionError(result.error)
+      }
+    })
+
+    socket.on('fixedIncomePayout', (payout: { offerId: string; issuer: string; name: string; principal: number; interest: number }) => {
+      showSystemNotification(`Pago recibido de ${payout.name}: ${formatCurrency(payout.principal + payout.interest)}`)
+    })
+
     socket.on('gameFinished', (results: any) => {
-      console.log('Game finished:', results)
+      debugLog('Game finished:', results)
       showSystemNotification('¡Juego terminado! Calculando resultados finales...')
       setTimeout(() => {
         nav('/results')
@@ -220,17 +346,47 @@ export default function GameBoard() {
     })
 
     socket.on('transactionProcessed', (data: any) => {
-      if (data.success) {
-        showTransactionConfirmation(data.type, data.companyName, data.quantity)
-        showDirectorMessage(`Transacción procesada exitosamente: ${data.type} ${data.quantity} acciones de ${data.companyName}`)
-      } else {
-        showTransactionError(data.error || 'No se pudo procesar la transacción')
-        showDirectorMessage(`Transacción no procesada: ${data.error}`, false)
+      try {
+        if (data.success) {
+          showTransactionConfirmation(data.type, data.companyName, data.quantity)
+          showDirectorMessage(`Transacción procesada exitosamente: ${data.type} ${data.quantity} acciones de ${data.companyName}`)
+          setError(null)
+        } else {
+          showTransactionError(data.error || 'No se pudo procesar la transacción')
+          showDirectorMessage(`Transacción no procesada: ${data.error}`, false)
+          setError(data.error || 'No se pudo procesar la transacción')
+        }
+      } catch (error) {
+        console.error('Error processing transaction result:', error)
+        setError('Error al procesar resultado de transacción')
+      }
+    })
+
+    socket.on('portfolioUpdate', (portfolio: PlayerState) => {
+      debugLog('Portfolio updated:', portfolio)
+      syncFromServer(portfolio)
+    })
+
+    socket.on('stocksUpdate', (stocks: Record<number, number>) => {
+      debugLog('🔔 Stocks updated received:', stocks)
+      try {
+        setCompanies((previousCompanies: Company[]) => {
+          const updatedCompanies = previousCompanies.map((company: Company) => {
+            const availableStocks = stocks[company.id] ?? company.availableStocks ?? 999
+            return {
+              ...company,
+              availableStocks
+            }
+          })
+          return updatedCompanies
+        })
+      } catch (error) {
+        console.error('❌ Error updating stocks:', error)
       }
     })
 
     return () => {
-      console.log('Cleaning up socket listeners...')
+      debugLog('Cleaning up socket listeners...')
       socket.off('priceUpdate')
       socket.off('roundTimer')
       socket.off('roundStarted')
@@ -238,45 +394,63 @@ export default function GameBoard() {
       socket.off('gameFinished')
       socket.off('roundState')
       socket.off('gameStarted')
+      socket.off('transactionProcessed')
+      socket.off('portfolioUpdate')
+      socket.off('stocksUpdate')
+      socket.off('fixedIncomeOffersUpdate')
+      socket.off('fixedIncomePurchaseResult')
+      socket.off('fixedIncomePayout')
+      if (isDevelopmentEnv) {
+        socket.offAny(handleAnyEvent)
+      }
     }
-  }, [socket, fetchNews, nav])
+  }, [socket, fetchNews, nav, updateFixedIncomeOffers, showRentaFijaAlert, showSystemNotification, showTransactionError, formatCurrency])
+
+  useEffect(() => {
+    const gameFinished = gamePhase === 'results' && currentRound >= TOTAL_ROUNDS
+    if (gameFinished) {
+      return
+    }
+
+    const interval = setInterval(() => {
+      totalElapsedSecondsRef.current += 1
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [gamePhase, currentRound])
 
   const loadCompanies = async () => {
-    try {
-      const response = await api.get('/api/companies')
-      setCompanies(response.data)
-    } catch (error) {
-      console.error('Error loading companies:', error)
-      // Fallback data para testing
-      setCompanies([
-        { id: 1, name: 'TechNova', symbol: 'TNV', currentPrice: 105.50, basePrice: 100, sector: 'Tech' },
-        { id: 2, name: 'GreenEnergy Corp', symbol: 'GEC', currentPrice: 87.25, basePrice: 90, sector: 'Energy' },
-        { id: 3, name: 'HealthPlus Inc', symbol: 'HPI', currentPrice: 142.80, basePrice: 130, sector: 'Health' },
-        { id: 4, name: 'RetailMax', symbol: 'RTM', currentPrice: 78.90, basePrice: 85, sector: 'Retail' },
-        { id: 5, name: 'FinanceFirst', symbol: 'FF', currentPrice: 95.60, basePrice: 95, sector: 'Finance' },
-        { id: 6, name: 'AutoDrive Ltd', symbol: 'ADL', currentPrice: 112.30, basePrice: 110, sector: 'Tech' }
-      ])
-    }
+    // Usar datos de fallback por defecto para asegurar que siempre tengamos las 6 empresas
+    const fallbackCompanies = [
+      { id: 1, name: 'TechNova', symbol: 'TNV', currentPrice: 75.00, basePrice: 75.00, sector: 'Tech' },
+      { id: 2, name: 'GreenEnergy Corp', symbol: 'GEC', currentPrice: 50.00, basePrice: 50.00, sector: 'Energy' },
+      { id: 3, name: 'HealthPlus Inc', symbol: 'HPI', currentPrice: 75.00, basePrice: 75.00, sector: 'Health' },
+      { id: 4, name: 'RetailMax', symbol: 'RTM', currentPrice: 80.00, basePrice: 80.00, sector: 'Retail' },
+      { id: 5, name: 'FinanceFirst', symbol: 'FF', currentPrice: 90.00, basePrice: 90.00, sector: 'Finance' },
+      { id: 6, name: 'AutoDrive Ltd', symbol: 'ADL', currentPrice: 65.00, basePrice: 65.00, sector: 'Tech' }
+    ]
+    
+    console.log('Setting fallback companies:', fallbackCompanies.length, 'companies')
+    setCompanies(fallbackCompanies)
+    
+    // No intentar cargar del servidor por ahora para evitar problemas
+    console.log('Using fallback companies only')
   }
 
   const loadPortfolio = async () => {
     try {
       const response = await api.get('/api/portfolio')
-      setPortfolio(response.data)
+      syncFromServer(response.data as PlayerState)
     } catch (error) {
-      console.error('Error loading portfolio:', error)
-      // Fallback data para testing
-      setPortfolio({
-        cashBalance: 10000,
-        totalValue: 0,
-        positions: []
-      })
+      console.error('Error loading portfolio. Keeping current client state:', error)
     }
   }
 
   const executeTransaction = async (type: 'BUY' | 'SELL', companyId: number, transactionQuantity: number) => {
     try {
       console.log('Attempting transaction:', { type, companyId, quantity: transactionQuantity })
+      setIsLoading(true)
+      setError(null)
       
       // Emitir transacción via Socket.IO para sincronización en tiempo real
       if (socket) {
@@ -289,11 +463,15 @@ export default function GameBoard() {
         })
       } else {
         console.error('Socket not available for transaction')
+        setError('No hay conexión con el servidor')
         alert('Error: No hay conexión con el servidor')
       }
     } catch (error) {
       console.error('Transaction error:', error)
+      setError('Error al procesar la transacción')
       alert('Error al procesar la transacción')
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -304,7 +482,7 @@ export default function GameBoard() {
   }
 
   const getPositionQuantity = (companyId: number) => {
-    return portfolio?.positions.find(p => p.company.id === companyId)?.quantity || 0
+    return playerState.holdings.find((holding) => holding.stockId === companyId)?.quantity ?? 0
   }
 
   const handleLogout = () => {
@@ -322,16 +500,38 @@ export default function GameBoard() {
 
   // Debug: Mostrar estado del temporizador
   useEffect(() => {
-    console.log('Timer state updated:', { roundTimer, currentRound, gamePhase })
+    debugLog('Timer state updated:', { roundTimer, currentRound, gamePhase })
   }, [roundTimer, currentRound, gamePhase])
+
+  // Mostrar pantalla de error si hay un error crítico
+  if (error && error.includes('Error al procesar')) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex items-center justify-center">
+        <div className="bg-red-900/30 border border-red-500 rounded-lg p-8 max-w-md">
+          <h2 className="text-xl font-bold text-red-400 mb-4">Error en el Juego</h2>
+          <p className="text-red-300 mb-4">{error}</p>
+          <button 
+            onClick={() => {
+              setError(null)
+              window.location.reload()
+            }}
+            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded"
+          >
+            Reiniciar Juego
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800">
       {/* Nuevo Header del Juego */}
       <GameHeader
         currentRound={currentRound}
-        totalRounds={5}
+        totalRounds={TOTAL_ROUNDS}
         roundTimer={roundTimer}
+        totalElapsedSeconds={totalElapsedSecondsRef.current}
         gamePhase={gamePhase}
         onLogout={handleLogout}
         onToggleSound={handleToggleSound}
@@ -357,31 +557,27 @@ export default function GameBoard() {
         {/* Left Panel - Fixed Income */}
         <div className="col-span-3">
           <div className="bg-slate-800/50 p-4 rounded-lg">
-            <h3 className="text-lg font-semibold text-white mb-4">VALORES DE RENTA FIJA QUE SALEN A LA VENTA</h3>
-            <div className="space-y-3">
-              <div className="bg-slate-700 p-3 rounded flex items-center space-x-3">
-                <div className="w-12 h-8 bg-red-600 rounded flex items-center justify-center">
-                  <span className="text-white text-xs font-bold">ZAIMELLA</span>
-                </div>
-                <div className="flex-1">
-                  <div className="text-white font-semibold text-sm">ZAIMELLA OBLIGACIONES</div>
-                  <div className="text-xs text-slate-400">Valor unitario: $ 50.00</div>
-                  <div className="text-xs text-slate-400">Interés: 7.50 %</div>
-                  <div className="text-xs text-slate-400">Plazo/Vigencia: 1/7</div>
-                </div>
+            <h3 className="text-lg font-semibold text-white mb-4">VALORES DE RENTA FIJA</h3>
+            {currentRound === 1 && fixedIncomeOffers.length > 0 ? (
+              <div className="space-y-3">
+                {fixedIncomeOffers.map((offer) => (
+                  <div key={offer.id} className="bg-slate-700 p-3 rounded flex flex-col space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-white font-semibold text-sm">{offer.name}</span>
+                      <span className="text-xs text-amber-300">{offer.termMonths} mes(es)</span>
+                    </div>
+                    <div className="text-xs text-slate-400">Emisor: {offer.issuer}</div>
+                    <div className="text-xs text-slate-400">Unidad: {formatCurrency(offer.unitPrice)}</div>
+                    <div className="text-xs text-slate-400">Interés: {(offer.interestRate * 100).toFixed(1)}%</div>
+                    <div className="text-xs text-slate-400">Disponibles: {offer.remainingUnits.toLocaleString('es-EC')}</div>
+                  </div>
+                ))}
               </div>
-              <div className="bg-slate-700 p-3 rounded flex items-center space-x-3">
-                <div className="w-12 h-8 bg-orange-600 rounded flex items-center justify-center">
-                  <span className="text-white text-xs font-bold">PRONACA</span>
-                </div>
-                <div className="flex-1">
-                  <div className="text-white font-semibold text-sm">PRONACA OBLIGACIONES</div>
-                  <div className="text-xs text-slate-400">Valor unitario: $ 51.50</div>
-                  <div className="text-xs text-slate-400">Interés: 8.00 %</div>
-                  <div className="text-xs text-slate-400">Plazo/Vigencia: 1/8</div>
-                </div>
+            ) : (
+              <div className="text-sm text-slate-400">
+                Las emisiones de renta fija solo están disponibles en la primera jugada.
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -456,11 +652,30 @@ export default function GameBoard() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
         >
+          {isLoading && (
+            <div className="bg-blue-900/30 border border-blue-500 rounded-lg p-4 mb-4">
+              <div className="flex items-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-400"></div>
+                <span className="text-blue-300">Procesando transacción...</span>
+              </div>
+            </div>
+          )}
+          {error && (
+            <div className="bg-red-900/30 border border-red-500 rounded-lg p-4 mb-4">
+              <p className="text-red-300 text-sm">{error}</p>
+            </div>
+          )}
           <TradingInterface
-            companies={companies.map(c => ({ ...c, availableShares: 999 }))}
+            companies={companies}
             onTransaction={executeTransaction}
             isRoundActive={isRoundActive}
             roundTimer={roundTimer}
+            playerHoldings={playerState.holdings}
+            fixedIncomeOffers={fixedIncomeOffers}
+            fixedIncomeOrders={fixedIncomeOrders}
+            onFixedIncomeQuantityChange={handleFixedIncomeInputChange}
+            onFixedIncomePurchase={handleFixedIncomePurchase}
+            canTradeFixedIncome={currentRound === 1}
           />
         </motion.div>
       )}
@@ -477,26 +692,26 @@ export default function GameBoard() {
       </div>
 
       {/* Portfolio Summary - Fixed at bottom right */}
-      {portfolio && (
+      {playerState && (
         <div className="fixed bottom-4 right-4 bg-slate-800 p-4 rounded-lg shadow-lg border border-slate-700">
           <h4 className="text-sm font-semibold text-white mb-2">Mi Portfolio</h4>
           <div className="space-y-1 text-sm">
             <div className="flex justify-between">
               <span className="text-slate-400">Efectivo:</span>
               <span className="text-green-400 font-semibold">
-                ${portfolio.cashBalance.toFixed(2)}
+                ${playerState.cash.toFixed(2)}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Acciones:</span>
               <span className="text-white font-semibold">
-                ${portfolio.totalValue.toFixed(2)}
+                ${playerState.portfolioValue.toFixed(2)}
               </span>
             </div>
             <div className="flex justify-between border-t border-slate-600 pt-1">
               <span className="text-white font-semibold">Total:</span>
               <span className="text-blue-400 font-bold">
-                ${(portfolio.cashBalance + portfolio.totalValue).toFixed(2)}
+                ${playerState.totalValue.toFixed(2)}
               </span>
             </div>
           </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { api } from '../utils/api'
+import { useSocket } from '../hooks/useSocket'
 
 interface Transaction {
   id: number
@@ -17,18 +17,38 @@ interface Transaction {
 export default function TransactionHistory() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [isExpanded, setIsExpanded] = useState(false)
+  const socket = useSocket()
 
   useEffect(() => {
-    loadTransactions()
-  }, [])
+    if (socket) {
+      // Escuchar transacciones procesadas
+      socket.on('transactionProcessed', (data: any) => {
+        if (data.success) {
+          const newTransaction: Transaction = {
+            id: Date.now(), // ID temporal
+            type: data.type,
+            quantity: data.quantity,
+            priceAtMoment: data.priceAtMoment || 0,
+            createdAt: new Date().toISOString(),
+            company: {
+              symbol: data.companySymbol || 'N/A',
+              name: data.companyName || 'Unknown Company'
+            }
+          }
+          
+          setTransactions(prev => [newTransaction, ...prev].slice(0, 10)) // Mantener solo las últimas 10
+        }
+      })
+
+      return () => {
+        socket.off('transactionProcessed')
+      }
+    }
+  }, [socket])
 
   const loadTransactions = async () => {
-    try {
-      const response = await api.get('/transactions/history')
-      setTransactions(response.data)
-    } catch (error) {
-      console.error('Error loading transactions:', error)
-    }
+    // Ya no necesitamos cargar desde API, las transacciones vienen por WebSocket
+    console.log('Transactions loaded via WebSocket')
   }
 
   const formatDate = (dateString: string) => {

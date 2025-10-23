@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { TransactionType } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WsGateway } from '../websocket/ws.gateway';
 
 type TransactionInput = {
   userId: number;
   companyId: number;
-  type: TransactionType;
+  type: 'BUY' | 'SELL';
   quantity: number;
 };
 
@@ -63,16 +63,20 @@ export class GamesService {
   }
 
   async results() {
-    // Simplified: return top users by totalValue
+    const latestResults = this.ws.getLatestResults();
+    if (latestResults && latestResults.length > 0) {
+      return latestResults;
+    }
+
     const portfolios = await this.prisma.portfolio.findMany({ include: { user: true } });
     type RankingEntry = { userId: number; name: string; totalValue: number };
     const ranking: RankingEntry[] = portfolios
-      .map((p) => ({
+      .map((p: typeof portfolios[number]) => ({
         userId: p.userId,
         name: p.user.name,
         totalValue: p.totalValue + p.cashBalance,
       }))
-      .sort((a, b) => b.totalValue - a.totalValue);
+      .sort((a: RankingEntry, b: RankingEntry) => b.totalValue - a.totalValue);
     this.ws.emitRanking(ranking);
     return ranking;
   }
