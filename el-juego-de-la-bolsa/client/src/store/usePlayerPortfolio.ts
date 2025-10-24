@@ -1,15 +1,23 @@
 import { create, type StateCreator } from 'zustand'
-import { FixedIncomeHolding, HoldingPosition, PlayerState } from '../types/game'
+import type { FixedIncomeHoldingPayload, PortfolioHoldingPayload, PortfolioUpdatePayload } from 'server/types/game-events'
+
+type NormalizedHolding = PortfolioHoldingPayload & { totalValue: number }
+type NormalizedFixedIncomeHolding = FixedIncomeHoldingPayload & { currentValue: number }
 
 export interface PlayerPortfolioStore {
-  state: PlayerState
-  syncFromServer: (payload: PlayerState) => void
+  state: PortfolioUpdatePayload & {
+    holdings: NormalizedHolding[]
+    fixedIncomeHoldings: NormalizedFixedIncomeHolding[]
+    fixedIncomeValue: number
+    totalValue: number
+  }
+  syncFromServer: (payload: PortfolioUpdatePayload) => void
   updateStage: (stage: number) => void
   applyPriceMap: (prices: Record<number, number>) => void
   reset: () => void
 }
 
-const defaultState: PlayerState = {
+const defaultState: PlayerPortfolioStore['state'] = {
   cash: 10000,
   holdings: [],
   fixedIncomeHoldings: [],
@@ -19,15 +27,33 @@ const defaultState: PlayerState = {
   totalValue: 10000
 }
 
-const recalc = (state: PlayerState): PlayerState => {
-  const portfolioValue = state.holdings.reduce<number>((accumulator, position) => {
+const normalizeHoldings = (holdings: PortfolioHoldingPayload[] = []): NormalizedHolding[] =>
+  holdings.map((holding) => {
+    const currentPrice = holding.currentPrice ?? 0
+    const totalValue = holding.totalValue ?? holding.quantity * currentPrice
+    return {
+      ...holding,
+      currentPrice,
+      totalValue
+    }
+  })
+
+const normalizeFixedIncome = (bonds: FixedIncomeHoldingPayload[] = []): NormalizedFixedIncomeHolding[] =>
+  bonds.map((bond) => {
+    const currentValue = bond.currentValue ?? bond.unitPrice * bond.quantity
+    return {
+      ...bond,
+      currentValue
+    }
+  })
+
+const recalc = (state: PortfolioUpdatePayload): PlayerPortfolioStore['state'] => {
+  const normalizedHoldings = normalizeHoldings(state.holdings)
+  const portfolioValue = normalizedHoldings.reduce<number>((accumulator, position) => {
     return accumulator + position.quantity * position.currentPrice
   }, 0)
 
-  const fixedIncomeHoldings: FixedIncomeHolding[] = state.fixedIncomeHoldings?.map((bond) => ({
-    ...bond,
-    currentValue: bond.currentValue ?? bond.unitPrice * bond.quantity
-  })) ?? []
+  const fixedIncomeHoldings = normalizeFixedIncome(state.fixedIncomeHoldings)
 
   const fixedIncomeValue = fixedIncomeHoldings.reduce<number>((accumulator, bond) => {
     return accumulator + bond.currentValue
@@ -35,10 +61,7 @@ const recalc = (state: PlayerState): PlayerState => {
 
   return {
     ...state,
-    holdings: state.holdings.map((holding) => ({
-      ...holding,
-      totalValue: holding.totalValue ?? holding.quantity * holding.currentPrice
-    })),
+    holdings: normalizedHoldings,
     fixedIncomeHoldings,
     portfolioValue,
     fixedIncomeValue,
@@ -49,7 +72,7 @@ const recalc = (state: PlayerState): PlayerState => {
 const createPlayerPortfolioStore: StateCreator<PlayerPortfolioStore> = (set) => ({
   state: defaultState,
 
-  syncFromServer: (payload: PlayerState) => {
+  syncFromServer: (payload: PortfolioUpdatePayload) => {
     set(() => ({
       state: recalc({
         cash: payload.cash,

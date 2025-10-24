@@ -7,6 +7,15 @@ import {
   OnGatewayDisconnect 
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import {
+  PriceChangePayload,
+  PriceChangesPayloadMap,
+  RoundEndedPayload,
+  RoundNewsItemPayload,
+  RoundNewsPayload,
+  RoundStartedPayload,
+  RoundStatePayload,
+} from '../types/game-events';
 
 interface Player {
   id: number;
@@ -43,11 +52,11 @@ interface GameRoom {
   status: 'waiting' | 'ready' | 'starting' | 'playing' | 'finished';
   currentRound: number;
   roundTimer: number;
-  currentNews: any;
+  currentNews: RoundStatePayload['news'];
   roundStartTime: number | null;
   roundInterval?: NodeJS.Timeout;
   createdAt: number;
-  fixedIncomeOffers: FixedIncomeOffer[];
+  fixedIncomeOffers: RoundStatePayload['fixedIncomeOffers'];
   totalElapsedSeconds: number;
   gameClockInterval?: NodeJS.Timeout;
 }
@@ -531,15 +540,17 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     const phase = remainingTime <= 60 ? 'trading' : 'news';
 
 
-    client.emit('roundState', {
+    const payload: RoundStatePayload = {
       status: room.status,
       round: room.currentRound,
       timer: remainingTime,
       news: room.currentNews,
       phase,
       fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(roomId) ?? []) : [],
-      totalElapsedSeconds: room.totalElapsedSeconds
-    });
+      totalElapsedSeconds: room.totalElapsedSeconds,
+    };
+
+    client.emit('roundState', payload);
   }
 
   @SubscribeMessage('checkRoomStatus')
@@ -612,13 +623,15 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     client.emit('gameStarted');
     
     if (room.currentRound > 0) {
-      client.emit('roundStarted', {
+      const payload: RoundStartedPayload = {
         round: room.currentRound,
         news: room.currentNews,
         timer: room.roundTimer,
         fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(room.id) ?? []) : [],
         totalElapsedSeconds: room.totalElapsedSeconds
-      });
+      };
+
+      client.emit('roundStarted', payload);
     }
   }
 
@@ -684,7 +697,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       status: 'waiting',
       currentRound: 0,
       roundTimer: 0,
-      currentNews: null,
+      currentNews: null as RoundStatePayload['news'],
       roundStartTime: null,
       createdAt: Date.now(),
       fixedIncomeOffers: [],
@@ -818,7 +831,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       status: 'waiting',
       currentRound: 0,
       roundTimer: 0,
-      currentNews: null,
+      currentNews: null as RoundStatePayload['news'],
       roundStartTime: null,
       createdAt: Date.now(),
       fixedIncomeOffers: [],
@@ -886,13 +899,15 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     const news = this.generateRoundNews();
     room.currentNews = news;
 
-    this.server.to(room.id).emit('roundStarted', {
+    const payload: RoundStartedPayload = {
       round: room.currentRound,
       news,
       timer: room.roundTimer,
       fixedIncomeOffers: room.fixedIncomeOffers,
-      totalElapsedSeconds: room.totalElapsedSeconds
-    });
+      totalElapsedSeconds: room.totalElapsedSeconds,
+    };
+
+    this.server.to(room.id).emit('roundStarted', payload);
 
     // Timer de la ronda
     room.roundInterval = setInterval(() => {
@@ -920,10 +935,12 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     // Enviar actualizaciones de portafolio a todos los jugadores
     this.updateAllPortfolios(room.id);
     
-    this.server.to(room.id).emit('roundEnded', {
+    const payload: RoundEndedPayload = {
       round: room.currentRound,
-      priceChanges
-    });
+      priceChanges,
+    };
+
+    this.server.to(room.id).emit('roundEnded', payload);
 
     // Siguiente ronda o finalizar juego
     if (room.currentRound < 5) {
@@ -952,14 +969,14 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     }, 30000);
   }
 
-  private generateRoundNews() {
-    const positiveNews = [
+  private generateRoundNews(): RoundNewsPayload {
+    const positiveNews: RoundNewsItemPayload[] = [
       { type: 'POSITIVE', title: 'Sector tecnológico muestra crecimiento sostenido', effect: 'Incremento en acciones tech' },
       { type: 'POSITIVE', title: 'Nuevas inversiones en energía renovable', effect: 'Alza en sector energético' },
       { type: 'POSITIVE', title: 'Bachilleres se preparan para exámenes universitarios', effect: 'Sector educativo en alza' }
     ];
 
-    const negativeNews = [
+    const negativeNews: RoundNewsItemPayload[] = [
       { type: 'NEGATIVE', title: 'Incertidumbre en mercados financieros', effect: 'Caída en sector bancario' },
       { type: 'NEGATIVE', title: 'Construcción del metro afecta el centro de la ciudad', effect: 'Baja en sector construcción' },
       { type: 'NEGATIVE', title: 'Cierre de carreteras por fenómeno del niño', effect: 'Impacto en transporte' }
@@ -971,9 +988,9 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     };
   }
 
-  private calculatePriceChanges() {
+  private calculatePriceChanges(): PriceChangesPayloadMap {
     const companyIds = [1, 2, 3, 4, 5, 6];
-    const changes: any = {};
+    const changes: PriceChangesPayloadMap = {};
     
     // Determinar si hay evento especial (5% de probabilidad)
     const specialEvent = this.getSpecialEvent();
@@ -983,16 +1000,16 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     }
     
     // Cambios normales basados en noticias
-    companyIds.forEach(companyId => {
+    companyIds.forEach((companyId) => {
       const change = (Math.random() - 0.5) * 0.2; // -10% a +10%
       const oldPrice = this.getStockPrice(companyId);
       const newPrice = oldPrice * (1 + change);
       
       changes[companyId] = {
-        oldPrice: oldPrice,
-        newPrice: newPrice,
-        change: change,
-        eventType: 'normal'
+        oldPrice,
+        newPrice,
+        change,
+        eventType: 'normal',
       };
       
       this.dlog(`Price change for company ${companyId}: $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)} (${(change * 100).toFixed(1)}%)`);
@@ -1010,8 +1027,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     return null;
   }
 
-  private applySpecialEvent(companyIds: number[], eventType: string) {
-    const changes: any = {};
+  private applySpecialEvent(companyIds: number[], eventType: string): PriceChangesPayloadMap {
+    const changes: PriceChangesPayloadMap = {};
     
     companyIds.forEach(companyId => {
       const oldPrice = this.getStockPrice(companyId);
@@ -1139,11 +1156,11 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     return this.currentPrices.get(companyId) || 50.0;
   }
 
-  private updateStockPrices(priceChanges: any) {
+  private updateStockPrices(priceChanges: PriceChangesPayloadMap) {
     for (const [companyId, change] of Object.entries(priceChanges)) {
-      const newPrice = (change as any).newPrice;
-      this.currentPrices.set(parseInt(companyId), newPrice);
-      this.dlog(`Updated price for company ${companyId}: $${newPrice.toFixed(2)}`);
+      const payload = change as PriceChangePayload;
+      this.currentPrices.set(parseInt(companyId, 10), payload.newPrice);
+      this.dlog(`Updated price for company ${companyId}: $${payload.newPrice.toFixed(2)}`);
     }
   }
 

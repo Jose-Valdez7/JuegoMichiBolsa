@@ -1,40 +1,9 @@
-export interface HoldingPosition {
-  stockId: number
-  symbol?: string
-  name?: string
-  quantity: number
-  buyPrice?: number
-  currentPrice: number
-  totalValue: number
-}
+import type { FixedIncomeHoldingPayload, FixedIncomeOfferPayload, PortfolioHoldingPayload, PortfolioUpdatePayload } from 'server/types/game-events'
 
-export interface FixedIncomeHolding {
-  offerId: string
-  issuer: string
-  name: string
-  unitPrice: number
-  interestRate: number
-  remainingMonths: number
-  quantity: number
-  currentValue: number
-}
+export type HoldingPosition = PortfolioHoldingPayload
 
-export interface FixedIncomeOffer {
-  id: string
-  issuer: string
-  name: string
-  unitPrice: number
-  interestRate: number
-  termMonths: number
-  remainingUnits: number
-}
+export type FixedIncomeHolding = FixedIncomeHoldingPayload
 
-export interface PlayerState {
-  cash: number
-  holdings: HoldingPosition[]
-  fixedIncomeHoldings?: FixedIncomeHolding[]
-  portfolioValue: number
-  stage: number
-  fixedIncomeValue?: number
-  totalValue: number
-}
+export type FixedIncomeOffer = FixedIncomeOfferPayload
+
+export type PlayerState = PortfolioUpdatePayload

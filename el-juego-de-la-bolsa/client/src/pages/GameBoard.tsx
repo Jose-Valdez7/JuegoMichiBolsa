@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { useGame } from '../store/useGame'
-import { useSocket } from '../hooks/useSocket'
+import { useGameSocket } from '../hooks/useGameSocket'
+import { usePortfolioSync } from '../hooks/usePortfolioSync'
 import { api } from '../utils/api'
 import StockChart from '../components/StockChart'
 import TransactionHistory from '../components/TransactionHistory'
@@ -11,7 +12,13 @@ import GameHeader from '../components/GameHeader'
 import GameNotifications, { useNotifications } from '../components/GameNotifications'
 import NewsReview from '../components/NewsReview'
 import { usePlayerPortfolio } from '../store/usePlayerPortfolio'
+import type { FixedIncomeOfferPayload, PriceChangePayload, PriceChangesPayloadMap, RoundEndedPayload, RoundNewsItemPayload, RoundStartedPayload, RoundStatePayload } from 'server/types/game-events'
 import { FixedIncomeOffer, PlayerState } from '../types/game'
+
+type SocketListener = {
+  event: string
+  handler: (...args: any[]) => void
+}
 
 const env: any = (typeof import.meta !== 'undefined' ? (import.meta as any).env : {}) || {}
 const isDevMode = env.MODE !== 'production'
@@ -50,7 +57,7 @@ export default function GameBoard() {
   const [isRoundActive, setIsRoundActive] = useState(true)
   const [showTradingInterface, setShowTradingInterface] = useState(false)
   const [showNewsReview, setShowNewsReview] = useState(false)
-  const [currentNews, setCurrentNews] = useState<any[]>([])
+  const [currentNews, setCurrentNews] = useState<RoundNewsItemPayload[]>([])
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [fixedIncomeOffers, setFixedIncomeOffers] = useState<FixedIncomeOffer[]>([])
   const [fixedIncomeOrders, setFixedIncomeOrders] = useState<Record<string, number>>({})
@@ -63,8 +70,7 @@ export default function GameBoard() {
     applyPriceMap
   } = usePlayerPortfolio()
 
-  const socket = useSocket()
-  const nav = useNavigate()
+  const socket = usePortfolioSync({ socketDebug: isDevMode && debugEnabled })
   const {
     notifications,
     removeNotification,
@@ -78,11 +84,21 @@ export default function GameBoard() {
 
   const hasShownFixedIncomeAlert = useRef(false)
 
-  const updateFixedIncomeOffers = useCallback((offers: FixedIncomeOffer[] = []) => {
+  const updateFixedIncomeOffers = useCallback((offers: FixedIncomeOfferPayload[] = []) => {
+    const normalized: FixedIncomeOffer[] = offers.map((offer) => ({
+      id: offer.id,
+      issuer: offer.issuer,
+      name: offer.name,
+      unitPrice: offer.unitPrice,
+      interestRate: offer.interestRate,
+      termMonths: offer.termMonths,
+      remainingUnits: offer.remainingUnits
+    }))
+
     setFixedIncomeOffers((current) => {
-      const sameLength = current.length === offers.length
+      const sameLength = current.length === normalized.length
       const isSame = sameLength && current.every((currentOffer) => {
-        const next = offers.find((offer) => offer.id === currentOffer.id)
+        const next = normalized.find((offer) => offer.id === currentOffer.id)
         if (!next) {
           return false
         }
@@ -98,12 +114,12 @@ export default function GameBoard() {
         return current
       }
 
-      return offers
+      return normalized
     })
 
     setFixedIncomeOrders((previous) => {
       const next: Record<string, number> = {}
-      offers.forEach((offer) => {
+      normalized.forEach((offer) => {
         next[offer.id] = previous[offer.id] ?? 0
       })
 
@@ -179,312 +195,269 @@ export default function GameBoard() {
     startGame()
   }, [])
 
-  // Debug: Mostrar empresas cargadas
   useEffect(() => {
-    debugLog('Companies state updated:', companies.length, 'companies:', companies)
-  }, [companies])
-
-  
-
-  useEffect(() => {
-    if (!socket) {
-      debugLog('Socket not available yet')
-      return
-    }
-
-    debugLog('Setting up socket listeners...')
-
-    const handleAnyEvent = (eventName: string) => {
-      debugLog(`Socket event received: ${eventName}`)
-    }
-
-    if (isDevMode && debugEnabled) {
-      socket.onAny(handleAnyEvent)
-    }
-
-    // Manejar inicio del juego desde la sala de espera
-    socket.on('gameStarted', () => {
-      debugLog('Game started! Redirecting to game...')
-      debugLog('Setting game phase to playing and round active to true')
-      // El juego ya comenzó, mantener en GameBoard
-      setGamePhase('playing')
-      setIsRoundActive(true)
-      totalElapsedSecondsRef.current = 0
-      setTotalElapsedSeconds(0)
-      setIsGameRunning(true)
-      hasShownFixedIncomeAlert.current = false
-      updateFixedIncomeOffers([])
-    })
-
-    socket.on('playersUpdate', (players: any[]) => {
-      debugLog(`Players update received. Count: ${players?.length ?? 0}`)
-    })
-
-    socket.on('gameStartCountdown', (seconds: number) => {
-      debugLog('Game start countdown:', seconds)
-    })
-
-    socket.on('roomStatus', (data: any) => {
-      debugLog('Room status:', data)
-      if (!data.inRoom) {
-        debugLog('Not in any room, redirecting to lobby')
-        navigate('/')
-      }
-    })
-
-    // El cliente ya debería estar en una sala desde el lobby
-    debugLog('GameBoard mounted, socket connected')
-
-    // Verificar si estamos en una sala, si no, intentar unirse
+    if (!socket) return
+    debugLog('GameBoard mounted, requesting initial room and round state')
     socket.emit('checkRoomStatus')
-    
-    // Solicitar el estado actual de la ronda al entrar
-    debugLog('Requesting round state...')
     socket.emit('requestRoundState')
+  }, [socket])
 
-    socket.on('roundState', (data: { status: string; round: number; timer: number; news: any; phase: 'news' | 'trading' | 'playing'; fixedIncomeOffers?: FixedIncomeOffer[]; totalElapsedSeconds?: number }) => {
-      debugLog(`Received round state. round=${data.round} phase=${data.phase} timer=${data.timer}`)
-      setCurrentRound(data.round || 1)
-      setRoundTimer(data.timer || 0)
-      setCurrentNews(data.news || [])
-      updateStage(data.round || 1)
-      updateFixedIncomeOffers(data.fixedIncomeOffers ?? [])
-
-      if (data.status === 'playing' || data.status === 'starting') {
-        debugLog('Game is active, setting phase to:', data.phase)
-        setIsGameRunning(true)
-        if (data.phase === 'news') {
-          setGamePhase('news')
-          setShowTradingInterface(false)
-          setIsRoundActive(true)
-        } else if (data.phase === 'trading') {
-          setGamePhase('trading')
-          setShowTradingInterface(true)
-          setIsRoundActive(true)
-        } else {
-          setGamePhase('playing')
-          setShowTradingInterface(false)
-        }
-      } else {
-        console.log('Game not active, status:', data.status)
-        setIsGameRunning(false)
-      }
-    })
-
-    socket.on('priceUpdate', (data: { companyId: number; price: number }) => {
-      setCompanies(prev => prev.map(c => 
-        c.id === data.companyId ? { ...c, currentPrice: data.price } : c
-      ))
-    })
-
-    socket.on('roundTimer', (seconds: number) => {
-      debugLog('Received round timer:', seconds)
-      setRoundTimer(seconds)
-      
-      // Actualizar fase basada en el tiempo restante
-      if (seconds > 60) {
-        setGamePhase('news')
-        setShowTradingInterface(false)
-      } else {
-        setGamePhase('trading')
-        setShowTradingInterface(true)
-      }
-    })
-
-    socket.on('gameTimer', (secs: number) => {
-      setTotalElapsedSeconds(secs)
-      totalElapsedSecondsRef.current = secs
-    })
-
-    socket.on('roundStarted', (data: { round: number; news: any; timer: number; fixedIncomeOffers?: FixedIncomeOffer[]; totalElapsedSeconds?: number }) => {
-      debugLog(`Round started. round=${data.round} offers=${data.fixedIncomeOffers?.length ?? 0}`)
-      setCurrentRound(data.round)
-      setRoundTimer(data.timer)
-      setGamePhase('news')
-      setIsRoundActive(true)
-      setCurrentNews(data.news || [])
-      updateFixedIncomeOffers(data.fixedIncomeOffers ?? [])
-
-      // Mostrar alerta de renta fija en la primera jugada
-      if (data.round === 1 && !hasShownFixedIncomeAlert.current && (data.fixedIncomeOffers?.length ?? 0) > 0) {
-        showRentaFijaAlert(data.fixedIncomeOffers!.map((offer) => offer.issuer))
-        hasShownFixedIncomeAlert.current = true
-      }
-      
-      // Actualizar noticias del juego
-      fetchNews()
-      
-      // Mostrar noticias por 15 segundos, luego cambiar a trading (alineado con servidor)
-      setTimeout(() => {
-        setGamePhase('trading')
-        setShowTradingInterface(true)
-        showSystemNotification('Fase de Trading iniciada. ¡Realiza tus transacciones!')
-      }, 15000)
-    })
-
-    socket.on('roundEnded', (data: { round: number; priceChanges: Record<string, { newPrice: number }> }) => {
-      debugLog(`Round ended. round=${data.round} changes=${Object.keys(data.priceChanges || {}).length}`)
-      setGamePhase('results')
-      setIsRoundActive(false)
-      setShowTradingInterface(false)
-      
-      // Detectar eventos especiales
-      const specialEvents = Object.values(data.priceChanges).filter((change: any) => 
-        change.eventType && change.eventType !== 'normal'
-      )
-      
-      if (specialEvents.length > 0) {
-        const event = specialEvents[0] as any
-        showSpecialEventNotification(event.eventType, event.message)
-      } else {
-        showSystemNotification('Ronda finalizada. Calculando fluctuaciones de precios...')
-      }
-      
-      // Actualizar precios basado en las fluctuaciones
-      const priceMap: Record<number, number> = {}
-      Object.entries(data.priceChanges).forEach(([key, change]) => {
-        const companyId = Number(key)
-        priceMap[companyId] = change.newPrice
-      })
-
-      setCompanies((prevCompanies: Company[]) => prevCompanies.map((company: Company) => {
-        const price = priceMap[company.id]
-        return price ? { ...company, currentPrice: price } : company
-      }))
-
-      applyPriceMap(priceMap)
-      showSystemNotification('Portfolio actualizado con nuevos precios')
-      
-      // Mostrar resultados por 5 segundos
-      setTimeout(() => {
+  const socketListeners: SocketListener[] = useMemo(() => [
+    {
+      event: 'gameStarted',
+      handler: () => {
+        debugLog('Game started! Redirecting to game...')
         setGamePhase('playing')
-      }, 5000)
-    })
-
-    socket.on('fixedIncomeOffersUpdate', (offers: FixedIncomeOffer[]) => {
-      debugLog(`Fixed income offers update. count=${offers?.length ?? 0}`)
-      updateFixedIncomeOffers(offers)
-    })
-
-    socket.on('fixedIncomePurchaseResult', (result: { success: boolean; error?: string; offer?: { id: string; name: string; issuer?: string }; quantity?: number }) => {
-      if (result.success && result.offer && result.quantity) {
-        showSystemNotification(`Compra de renta fija realizada: ${result.quantity} de ${result.offer.name}`)
-        setFixedIncomeOrders((previous) => ({
-          ...previous,
-          [result.offer!.id]: 0
-        }))
-      } else if (result.error) {
-        showTransactionError(result.error)
+        setIsRoundActive(true)
+        totalElapsedSecondsRef.current = 0
+        setTotalElapsedSeconds(0)
+        setIsGameRunning(true)
+        hasShownFixedIncomeAlert.current = false
+        updateFixedIncomeOffers([])
       }
-    })
-
-    socket.on('fixedIncomePayout', (payout: { offerId: string; issuer: string; name: string; principal: number; interest: number }) => {
-      showSystemNotification(`Pago recibido de ${payout.name}: ${formatCurrency(payout.principal + payout.interest)}`)
-    })
-
-    socket.on('gameFinished', (results: any) => {
-      debugLog('Game finished:', results)
-      showSystemNotification('¡Juego terminado! Calculando resultados finales...')
-      setIsGameRunning(false)
-      setTimeout(() => {
-        nav('/results')
-      }, 2000)
-    })
-
-    socket.on('transactionProcessed', (data: any) => {
-      try {
-        if (data.success) {
-          showTransactionConfirmation(data.type, data.companyName, data.quantity)
-          showDirectorMessage(`Transacción procesada exitosamente: ${data.type} ${data.quantity} acciones de ${data.companyName}`)
-          setError(null)
-        } else {
-          showTransactionError(data.error || 'No se pudo procesar la transacción')
-          showDirectorMessage(`Transacción no procesada: ${data.error}`, false)
-          setError(data.error || 'No se pudo procesar la transacción')
+    },
+    {
+      event: 'playersUpdate',
+      handler: (players: any[]) => {
+        debugLog(`Players update received. Count: ${players?.length ?? 0}`)
+      }
+    },
+    {
+      event: 'gameStartCountdown',
+      handler: (seconds: number) => {
+        debugLog('Game start countdown:', seconds)
+      }
+    },
+    {
+      event: 'roomStatus',
+      handler: (data: any) => {
+        debugLog('Room status:', data)
+        if (!data.inRoom) {
+          debugLog('Not in any room, redirecting to lobby')
+          navigate('/')
         }
-      } catch (error) {
-        console.error('Error processing transaction result:', error)
-        setError('Error al procesar resultado de transacción')
       }
-    })
-    socket.on('bulkTransactionProcessed', (payload: { success: boolean; results: Array<{ success: boolean; type: 'BUY' | 'SELL'; companyId: number; quantity: number; error?: string; companyName?: string; companySymbol?: string; priceAtMoment?: number }>; processed: number; total: number; serverProcessingMs?: number; clientTs?: number; error?: string }) => {
-      try {
-        setIsLoading(false)
-        if (!payload) return
-        if (payload.success) {
-          payload.results.filter(r => r.success).forEach(r => {
-            if (r.companyName && r.quantity) {
-              showTransactionConfirmation(r.type as any, r.companyName, r.quantity)
-            }
-          })
+    },
+    {
+      event: 'roundState',
+      handler: (data: RoundStatePayload) => {
+        debugLog(`Received round state. round=${data.round} phase=${data.phase} timer=${data.timer}`)
+        setCurrentRound(data.round || 1)
+        setRoundTimer(data.timer || 0)
+        setCurrentNews((data.news ? [data.news.positive, data.news.negative] : []) as RoundNewsPayload[] | [])
+        updateStage(data.round || 1)
+        updateFixedIncomeOffers((data.fixedIncomeOffers as FixedIncomeOfferPayload[] | undefined) ?? [])
 
-          const failed = payload.results.filter(r => !r.success)
-          if (failed.length > 0) {
-            failed.slice(0, 3).forEach(r => {
-              const label = r.companySymbol || r.companyName || `#${r.companyId}`
-              showTransactionError(r.error || `No se pudo procesar ${label}`)
-            })
-            if (failed.length > 3) {
-              showTransactionError(`Y ${failed.length - 3} errores más...`)
-            }
+        if (data.status === 'playing' || data.status === 'starting') {
+          debugLog('Game is active, setting phase to:', data.phase)
+          setIsGameRunning(true)
+          if (data.phase === 'news') {
+            setGamePhase('news')
+            setShowTradingInterface(false)
+            setIsRoundActive(true)
+          } else if (data.phase === 'trading') {
+            setGamePhase('trading')
+            setShowTradingInterface(true)
+            setIsRoundActive(true)
+          } else {
+            setGamePhase('playing')
+            setShowTradingInterface(false)
           }
         } else {
-          showTransactionError(payload.error || 'Error al procesar órdenes')
+          console.log('Game not active, status:', data.status)
+          setIsGameRunning(false)
         }
-      } catch (error) {
-        console.error('Error processing bulk result:', error)
-        setError('Error al procesar resultado de órdenes')
-      } finally {
-        setIsLoading(false)
       }
-    })
+    },
+    {
+      event: 'priceUpdate',
+      handler: (data: { companyId: number; price: number }) => {
+        setCompanies((prev) => prev.map((company) => (company.id === data.companyId ? { ...company, currentPrice: data.price } : company)))
+      }
+    },
+    {
+      event: 'roundTimer',
+      handler: (seconds: number) => {
+        debugLog('Received round timer:', seconds)
+        setRoundTimer(seconds)
 
-    socket.on('portfolioUpdate', (portfolio: PlayerState) => {
-      debugLog(`Portfolio updated. cash=${portfolio?.cash ?? 'n/a'} holdings=${portfolio?.holdings?.length ?? 0}`)
-      syncFromServer(portfolio)
-    })
+        if (seconds > 60) {
+          setGamePhase('news')
+          setShowTradingInterface(false)
+        } else {
+          setGamePhase('trading')
+          setShowTradingInterface(true)
+        }
+      }
+    },
+    {
+      event: 'gameTimer',
+      handler: (secs: number) => {
+        setTotalElapsedSeconds(secs)
+        totalElapsedSecondsRef.current = secs
+      }
+    },
+    {
+      event: 'roundStarted',
+      handler: (data: RoundStartedPayload) => {
+        debugLog(`Round started. round=${data.round} offers=${data.fixedIncomeOffers?.length ?? 0}`)
+        setCurrentRound(data.round)
+        setRoundTimer(data.timer)
+        setGamePhase('news')
+        setIsRoundActive(true)
+        const newsItems: RoundNewsItemPayload[] = data.news ? [data.news.positive, data.news.negative] : []
+        setCurrentNews(newsItems)
+        updateFixedIncomeOffers(data.fixedIncomeOffers ?? [])
 
-    socket.on('stocksUpdate', (stocks: Record<number, number>) => {
-      debugLog(`🔔 Stocks updated received. size=${Object.keys(stocks || {}).length}`)
-      try {
-        setCompanies((previousCompanies: Company[]) => {
-          const updatedCompanies = previousCompanies.map((company: Company) => {
-            const availableStocks = stocks[company.id] ?? company.availableStocks ?? 999
-            return {
-              ...company,
-              availableStocks,
-              availableShares: availableStocks as any
-            }
-          })
-          return updatedCompanies
+        if (data.round === 1 && !hasShownFixedIncomeAlert.current && (data.fixedIncomeOffers?.length ?? 0) > 0) {
+          showRentaFijaAlert((data.fixedIncomeOffers ?? []).map((offer: FixedIncomeOfferPayload) => offer.issuer))
+          hasShownFixedIncomeAlert.current = true
+        }
+
+        fetchNews()
+
+        setTimeout(() => {
+          setGamePhase('trading')
+          setShowTradingInterface(true)
+          showSystemNotification('Fase de Trading iniciada. ¡Realiza tus transacciones!')
+        }, 15000)
+      }
+    },
+    {
+      event: 'roundEnded',
+      handler: (data: RoundEndedPayload) => {
+        debugLog(`Round ended. round=${data.round} changes=${Object.keys(data.priceChanges || {}).length}`)
+        setGamePhase('results')
+        setIsRoundActive(false)
+        setShowTradingInterface(false)
+
+        const specialEvents = Object.values(data.priceChanges).filter((change: PriceChangePayload) => change.eventType && change.eventType !== 'normal')
+
+        if (specialEvents.length > 0) {
+          const event = specialEvents[0] as any
+          showSpecialEventNotification(event.eventType, event.message)
+        } else {
+          showSystemNotification('Ronda finalizada. Calculando fluctuaciones de precios...')
+        }
+
+        const priceMap: Record<number, number> = {}
+        Object.entries(data.priceChanges as PriceChangesPayloadMap).forEach(([key, change]) => {
+          const payload: PriceChangePayload = change as PriceChangePayload
+          const companyId = Number(key)
+          priceMap[companyId] = payload.newPrice
         })
-      } catch (error) {
-        console.error('❌ Error updating stocks:', error)
-      }
-    })
 
-    return () => {
-      debugLog('Cleaning up socket listeners...')
-      socket.off('priceUpdate')
-      socket.off('roundTimer')
-      socket.off('roundStarted')
-      socket.off('roundEnded')
-      socket.off('gameFinished')
-      socket.off('roundState')
-      socket.off('gameStarted')
-      socket.off('transactionProcessed')
-      socket.off('gameTimer')
-      socket.off('bulkTransactionProcessed')
-      socket.off('portfolioUpdate')
-      socket.off('stocksUpdate')
-      socket.off('fixedIncomeOffersUpdate')
-      socket.off('fixedIncomePurchaseResult')
-      socket.off('fixedIncomePayout')
-      if (isDevMode && debugEnabled) {
-        socket.offAny(handleAnyEvent)
+        setCompanies((prevCompanies) => prevCompanies.map((company) => {
+          const price = priceMap[company.id]
+          return price ? { ...company, currentPrice: price } : company
+        }))
+
+        applyPriceMap(priceMap)
+        showSystemNotification('Portfolio actualizado con nuevos precios')
+
+        setTimeout(() => {
+          setGamePhase('playing')
+        }, 5000)
+      }
+    },
+    {
+      event: 'fixedIncomeOffersUpdate',
+      handler: (offers: FixedIncomeOfferPayload[]) => {
+        debugLog(`Fixed income offers update. count=${offers?.length ?? 0}`)
+        updateFixedIncomeOffers(offers)
+      }
+    },
+    {
+      event: 'fixedIncomePurchaseResult',
+      handler: (result: { success: boolean; error?: string; offer?: { id: string; name: string }; quantity?: number }) => {
+        if (result.success && result.offer && result.quantity) {
+          showSystemNotification(`Compra de renta fija realizada: ${result.quantity} de ${result.offer.name}`)
+          setFixedIncomeOrders((previous) => ({
+            ...previous,
+            [result.offer!.id]: 0
+          }))
+        } else if (result.error) {
+          showTransactionError(result.error)
+        }
+      }
+    },
+    {
+      event: 'fixedIncomePayout',
+      handler: (payout: { offerId: string; issuer: string; name: string; principal: number; interest: number }) => {
+        showSystemNotification(`Pago recibido de ${payout.name}: ${formatCurrency(payout.principal + payout.interest)}`)
+      }
+    },
+    {
+      event: 'gameFinished',
+      handler: (results: any) => {
+        debugLog('Game finished:', results)
+        showSystemNotification('¡Juego terminado! Calculando resultados finales...')
+        setIsGameRunning(false)
+        setTimeout(() => {
+          navigate('/results')
+        }, 2000)
+      }
+    },
+    {
+      event: 'transactionProcessed',
+      handler: (data: any) => {
+        try {
+          if (data.success) {
+            showTransactionConfirmation(data.type, data.companyName, data.quantity)
+            showDirectorMessage(`Transacción procesada exitosamente: ${data.type} ${data.quantity} acciones de ${data.companyName}`)
+            setError(null)
+          } else {
+            showTransactionError(data.error || 'No se pudo procesar la transacción')
+            showDirectorMessage(`Transacción no procesada: ${data.error}`, false)
+            setError(data.error || 'No se pudo procesar la transacción')
+          }
+        } catch (err) {
+          console.error('Error processing transaction result:', err)
+          setError('Error al procesar resultado de transacción')
+        }
+      }
+    },
+    {
+      event: 'bulkTransactionProcessed',
+      handler: (payload: { success: boolean; results: Array<{ success: boolean; type: 'BUY' | 'SELL'; companyId: number; quantity: number; error?: string; companyName?: string; companySymbol?: string; priceAtMoment?: number }>; processed: number; total: number; serverProcessingMs?: number; clientTs?: number; error?: string }) => {
+        try {
+          setIsLoading(false)
+          if (!payload) return
+          if (payload.success) {
+            payload.results.filter((r) => r.success).forEach((r) => {
+              if (r.companyName && r.quantity) {
+                showTransactionConfirmation(r.type as any, r.companyName, r.quantity)
+              }
+            })
+
+            const failed = payload.results.filter((r) => !r.success)
+            if (failed.length > 0) {
+              failed.slice(0, 3).forEach((r) => {
+                const label = r.companySymbol || r.companyName || `#${r.companyId}`
+                showTransactionError(r.error || `No se pudo procesar ${label}`)
+              })
+              if (failed.length > 3) {
+                showTransactionError(`Y ${failed.length - 3} errores más...`)
+              }
+            }
+          } else {
+            showTransactionError(payload.error || 'Error al procesar órdenes')
+          }
+        } catch (err) {
+          console.error('Error processing bulk result:', err)
+          setError('Error al procesar resultado de órdenes')
+        } finally {
+          setIsLoading(false)
+        }
       }
     }
-  }, [socket, fetchNews, nav, updateFixedIncomeOffers, showRentaFijaAlert, showSystemNotification, showTransactionError, formatCurrency])
+  ], [navigate, updateStage, updateFixedIncomeOffers, applyPriceMap, fetchNews, showRentaFijaAlert, showSystemNotification, showSpecialEventNotification, showTransactionConfirmation, showDirectorMessage, showTransactionError, formatCurrency])
+
+  useGameSocket({
+    socket,
+    listeners: socketListeners,
+    onEvent: isDevMode && debugEnabled ? (eventName) => debugLog(`Socket event received: ${eventName}`) : undefined
+  })
 
   const loadCompanies = async () => {
     try {
@@ -582,7 +555,7 @@ export default function GameBoard() {
   }
 
   const handleLogout = () => {
-    nav('/login')
+    navigate('/login')
   }
 
   const handleToggleSound = () => {

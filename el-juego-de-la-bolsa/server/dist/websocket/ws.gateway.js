@@ -23,6 +23,10 @@ let WsGateway = class WsGateway {
         this.companyStocks = new Map();
         this.latestGameResults = null;
         this.roomFixedIncomeOffers = new Map();
+        this.debugEnabled = process.env.DEBUG_WS === 'true';
+        this.stocksUpdateTimers = new Map();
+        this.fixedIncomeOffersUpdateTimers = new Map();
+        this.currentPrices = new Map();
         this.fixedIncomeTemplates = [
             {
                 id: 'ZAIMELLA',
@@ -65,7 +69,19 @@ let WsGateway = class WsGateway {
                 termMonths: 5,
             },
         ];
-        this.currentPrices = new Map();
+    }
+    dlog(...args) { if (this.debugEnabled)
+        console.log(...args); }
+    mapPlayerForClient(player) {
+        return {
+            id: player.id,
+            name: player.name,
+            isReady: player.isReady,
+            characterId: player.characterId,
+        };
+    }
+    mapPlayersForClient(players) {
+        return players.map(player => this.mapPlayerForClient(player));
     }
     buildFixedIncomeOffers() {
         return this.fixedIncomeTemplates.map((template) => ({
@@ -176,7 +192,7 @@ let WsGateway = class WsGateway {
             this.server.to(client.id).emit('portfolioUpdate', updatedPortfolio);
         }
         this.roomFixedIncomeOffers.set(roomId, offers);
-        this.server.to(roomId).emit('fixedIncomeOffersUpdate', offers);
+        this.scheduleFixedIncomeOffersUpdate(roomId);
     }
     getPlayerFixedIncome(roomId, socketId) {
         const roomHoldings = this.playerFixedIncome.get(roomId);
@@ -215,6 +231,187 @@ let WsGateway = class WsGateway {
             roomHoldings.set(socketId, remainingHoldings);
         }
     }
+    handleGameTransaction(client, payload) {
+        const roomId = this.playerSockets.get(client.id);
+        if (!roomId) {
+            client.emit('transactionProcessed', { success: false, error: 'No estás en una sala' });
+            return;
+        }
+        const room = this.gameRooms.get(roomId);
+        if (!room || room.status !== 'playing') {
+            client.emit('transactionProcessed', { success: false, error: 'La partida no está activa' });
+            return;
+        }
+        const { companyId, type, quantity } = payload || {};
+        const q = Number(quantity);
+        if (!companyId || (type !== 'BUY' && type !== 'SELL') || !q || q <= 0) {
+            client.emit('transactionProcessed', { success: false, error: 'Solicitud inválida' });
+            return;
+        }
+        const roomPortfolios = this.playerPortfolios.get(roomId);
+        if (!roomPortfolios) {
+            client.emit('transactionProcessed', { success: false, error: 'Portafolio no encontrado' });
+            return;
+        }
+        const portfolio = roomPortfolios.get(client.id);
+        if (!portfolio) {
+            client.emit('transactionProcessed', { success: false, error: 'Portafolio no inicializado' });
+            return;
+        }
+        const price = this.getStockPrice(companyId);
+        const companyName = this.getCompanyName(companyId);
+        const companySymbol = this.getCompanySymbol(companyId);
+        const roomStocks = this.companyStocks.get(roomId) ?? new Map();
+        if (!this.companyStocks.has(roomId)) {
+            this.companyStocks.set(roomId, roomStocks);
+        }
+        if (!roomStocks.has(companyId)) {
+            roomStocks.set(companyId, 999);
+        }
+        if (type === 'BUY') {
+            const available = roomStocks.get(companyId) ?? 0;
+            const totalCost = price * q;
+            if (available < q) {
+                client.emit('transactionProcessed', { success: false, error: 'No hay suficientes acciones disponibles' });
+                return;
+            }
+            if (portfolio.cash < totalCost) {
+                client.emit('transactionProcessed', { success: false, error: 'Fondos insuficientes' });
+                return;
+            }
+            portfolio.cash -= totalCost;
+            const currentQty = portfolio.stocks.get(companyId) ?? 0;
+            portfolio.stocks.set(companyId, currentQty + q);
+            roomStocks.set(companyId, available - q);
+            client.emit('transactionProcessed', {
+                success: true,
+                type,
+                companyId,
+                companyName,
+                companySymbol,
+                quantity: q,
+                priceAtMoment: price
+            });
+        }
+        else {
+            const holdingQty = portfolio.stocks.get(companyId) ?? 0;
+            if (holdingQty < q) {
+                client.emit('transactionProcessed', { success: false, error: 'No tienes suficientes acciones para vender' });
+                return;
+            }
+            const proceeds = price * q;
+            portfolio.cash += proceeds;
+            const newQty = holdingQty - q;
+            if (newQty > 0) {
+                portfolio.stocks.set(companyId, newQty);
+            }
+            else {
+                portfolio.stocks.delete(companyId);
+            }
+            const available = roomStocks.get(companyId) ?? 0;
+            roomStocks.set(companyId, available + q);
+            client.emit('transactionProcessed', {
+                success: true,
+                type,
+                companyId,
+                companyName,
+                companySymbol,
+                quantity: q,
+                priceAtMoment: price
+            });
+        }
+        const updatedPortfolio = this.getPlayerPortfolio(roomId, client.id);
+        if (updatedPortfolio) {
+            this.server.to(client.id).emit('portfolioUpdate', updatedPortfolio);
+        }
+        const stocksPayload = {};
+        stocksPayload[companyId] = this.companyStocks.get(roomId)?.get(companyId) ?? 0;
+        this.server.to(roomId).emit('stocksUpdate', stocksPayload);
+    }
+    handleBulkGameTransactions(client, payload) {
+        const roomId = this.playerSockets.get(client.id);
+        if (!roomId) {
+            client.emit('bulkTransactionProcessed', { success: false, error: 'No estás en una sala', results: [], processed: 0, total: 0 });
+            return;
+        }
+        const actions = payload?.actions ?? [];
+        if (!Array.isArray(actions) || actions.length === 0) {
+            client.emit('bulkTransactionProcessed', { success: false, error: 'No hay órdenes para procesar', results: [], processed: 0, total: 0 });
+            return;
+        }
+        const results = [];
+        const changed = {};
+        for (const action of actions) {
+            const { companyId, type, quantity } = action || {};
+            const q = Number(quantity) || 0;
+            if (!companyId || (type !== 'BUY' && type !== 'SELL') || q <= 0) {
+                results.push({ success: false, type: type, companyId: companyId, quantity: q, error: 'Orden inválida' });
+                continue;
+            }
+            const price = this.getStockPrice(companyId);
+            const companyName = this.getCompanyName(companyId);
+            const companySymbol = this.getCompanySymbol(companyId);
+            const roomPortfolios = this.playerPortfolios.get(roomId);
+            const portfolio = roomPortfolios?.get(client.id);
+            const roomStocks = this.companyStocks.get(roomId) ?? new Map();
+            if (roomPortfolios && portfolio) {
+                if (!roomStocks.has(companyId))
+                    roomStocks.set(companyId, 999);
+                if (!this.companyStocks.has(roomId))
+                    this.companyStocks.set(roomId, roomStocks);
+                if (type === 'BUY') {
+                    const available = roomStocks.get(companyId) ?? 0;
+                    const cost = price * q;
+                    if (available >= q && portfolio.cash >= cost) {
+                        portfolio.cash -= cost;
+                        portfolio.stocks.set(companyId, (portfolio.stocks.get(companyId) ?? 0) + q);
+                        roomStocks.set(companyId, available - q);
+                        changed[companyId] = roomStocks.get(companyId);
+                        results.push({ success: true, type, companyId, quantity: q, companyName, companySymbol, priceAtMoment: price });
+                    }
+                    else {
+                        results.push({ success: false, type, companyId, quantity: q, error: available < q ? 'Sin acciones suficientes' : 'Fondos insuficientes', companyName, companySymbol, priceAtMoment: price });
+                    }
+                }
+                else {
+                    const holdingQty = portfolio.stocks.get(companyId) ?? 0;
+                    if (holdingQty >= q) {
+                        portfolio.cash += price * q;
+                        const newQty = holdingQty - q;
+                        if (newQty > 0)
+                            portfolio.stocks.set(companyId, newQty);
+                        else
+                            portfolio.stocks.delete(companyId);
+                        roomStocks.set(companyId, (roomStocks.get(companyId) ?? 0) + q);
+                        changed[companyId] = roomStocks.get(companyId);
+                        results.push({ success: true, type, companyId, quantity: q, companyName, companySymbol, priceAtMoment: price });
+                    }
+                    else {
+                        results.push({ success: false, type, companyId, quantity: q, error: 'No tienes suficientes acciones', companyName, companySymbol, priceAtMoment: price });
+                    }
+                }
+            }
+            else {
+                results.push({ success: false, type, companyId, quantity: q, error: 'Portafolio no disponible', companyName, companySymbol, priceAtMoment: price });
+            }
+        }
+        const updatedPortfolio = this.getPlayerPortfolio(roomId, client.id);
+        if (updatedPortfolio) {
+            this.server.to(client.id).emit('portfolioUpdate', updatedPortfolio);
+        }
+        if (Object.keys(changed).length > 0) {
+            this.server.to(roomId).emit('stocksUpdate', changed);
+        }
+        const allOk = results.every(r => r.success);
+        client.emit('bulkTransactionProcessed', {
+            success: allOk,
+            results,
+            processed: results.length,
+            total: actions.length,
+            serverProcessingMs: undefined,
+            clientTs: payload?.clientTs
+        });
+    }
     getFixedIncomeValue(roomId, socketId) {
         return this.getPlayerFixedIncome(roomId, socketId).reduce((total, bond) => total + bond.unitPrice * bond.quantity, 0);
     }
@@ -227,19 +424,37 @@ let WsGateway = class WsGateway {
         const room = this.gameRooms.get(roomId);
         if (!room)
             return;
-        let remainingTime = room.roundTimer;
-        if (room.roundStartTime && room.roundTimer > 0) {
-            const elapsed = Math.floor((Date.now() - room.roundStartTime) / 1000);
-            remainingTime = Math.max(0, room.roundTimer - elapsed);
-        }
+        const remainingTime = Math.max(0, room.roundTimer);
         const phase = remainingTime <= 60 ? 'trading' : 'news';
-        client.emit('roundState', {
+        const payload = {
             status: room.status,
             round: room.currentRound,
             timer: remainingTime,
             news: room.currentNews,
             phase,
-            fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(roomId) ?? []) : []
+            fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(roomId) ?? []) : [],
+            totalElapsedSeconds: room.totalElapsedSeconds,
+        };
+        client.emit('roundState', payload);
+    }
+    handleCheckRoomStatus(client) {
+        const roomId = this.playerSockets.get(client.id);
+        if (!roomId) {
+            client.emit('roomStatus', { inRoom: false });
+            return;
+        }
+        const room = this.gameRooms.get(roomId);
+        if (!room) {
+            this.playerSockets.delete(client.id);
+            client.emit('roomStatus', { inRoom: false });
+            return;
+        }
+        client.emit('roomStatus', {
+            inRoom: true,
+            roomId,
+            status: room.status,
+            players: room.players.length,
+            playersList: this.mapPlayersForClient(room.players),
         });
     }
     handleConnection(client) {
@@ -266,7 +481,8 @@ let WsGateway = class WsGateway {
                 inRoom: true,
                 roomId: reconnectionInfo.roomId,
                 status: room.status,
-                players: room.players.length
+                players: room.players.length,
+                playersList: this.mapPlayersForClient(room.players)
             });
             if (room.status === 'playing') {
                 this.sendCurrentGameState(client, room);
@@ -276,24 +492,26 @@ let WsGateway = class WsGateway {
     sendCurrentGameState(client, room) {
         client.emit('gameStarted');
         if (room.currentRound > 0) {
-            client.emit('roundStarted', {
+            const payload = {
                 round: room.currentRound,
                 news: room.currentNews,
                 timer: room.roundTimer,
-                fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(room.id) ?? []) : []
-            });
+                fixedIncomeOffers: room.currentRound === 1 ? (this.roomFixedIncomeOffers.get(room.id) ?? []) : [],
+                totalElapsedSeconds: room.totalElapsedSeconds
+            };
+            client.emit('roundStarted', payload);
         }
     }
     initializeGameData(roomId) {
         this.playerPortfolios.set(roomId, new Map());
         this.playerFixedIncome.set(roomId, new Map());
-        console.log(`Game data initialized for room ${roomId}`);
+        this.dlog(`Game data initialized for room ${roomId}`);
         const stocks = new Map();
         for (let i = 1; i <= 6; i++) {
             stocks.set(i, 999);
         }
         this.companyStocks.set(roomId, stocks);
-        console.log(`Available stocks initialized: 999 for each company`);
+        this.dlog(`Available stocks initialized: 999 for each company`);
         this.roomFixedIncomeOffers.set(roomId, []);
     }
     initializePlayerPortfolio(roomId, socketId) {
@@ -306,11 +524,11 @@ let WsGateway = class WsGateway {
                 cash: 10000,
                 stocks: new Map()
             });
-            console.log(`Portfolio initialized for socket ${socketId} in room ${roomId}: $10,000 cash`);
+            this.dlog(`Portfolio initialized for socket ${socketId} in room ${roomId}: $10,000 cash`);
         }
         else {
             const existingPortfolio = roomPortfolios.get(socketId);
-            console.log(`Portfolio already exists for socket ${socketId} in room ${roomId}: Cash $${existingPortfolio?.cash}, Stocks: ${existingPortfolio?.stocks.size} positions`);
+            this.dlog(`Portfolio already exists for socket ${socketId} in room ${roomId}: Cash $${existingPortfolio?.cash}, Stocks: ${existingPortfolio?.stocks.size} positions`);
         }
         const roomFixedIncome = this.playerFixedIncome.get(roomId);
         if (roomFixedIncome && !roomFixedIncome.has(socketId)) {
@@ -335,6 +553,8 @@ let WsGateway = class WsGateway {
             roundStartTime: null,
             createdAt: Date.now(),
             fixedIncomeOffers: [],
+            totalElapsedSeconds: 0,
+            gameClockInterval: undefined
         };
         const player = {
             id: 1,
@@ -355,6 +575,8 @@ let WsGateway = class WsGateway {
         if (initialPortfolio) {
             client.emit('portfolioUpdate', initialPortfolio);
         }
+        const publicPlayers = this.mapPlayersForClient(room.players);
+        this.server.to(roomId).emit('playersUpdate', publicPlayers);
         client.emit('roomCreated', {
             roomCode,
             players: room.players,
@@ -404,305 +626,17 @@ let WsGateway = class WsGateway {
         if (initialPortfolio) {
             client.emit('portfolioUpdate', initialPortfolio);
         }
+        const publicPlayers = this.mapPlayersForClient(room.players);
         this.server.to(roomId).emit('playerJoined', {
-            player,
-            players: room.players,
+            player: this.mapPlayerForClient(player),
+            players: publicPlayers,
             message: `${playerName} se unió a la sala`
         });
+        this.server.to(roomId).emit('playersUpdate', publicPlayers);
         if (room.players.length === 5) {
             room.status = 'ready';
             this.startGameCountdown(room);
         }
-    }
-    handleJoinWaitingRoom(client, payload) {
-        client.emit('roomError', {
-            message: 'Método obsoleto. Usa "Crear Partida" o "Unirse a Partida" desde el lobby.'
-        });
-    }
-    handleCheckRoomStatus(client) {
-        const roomId = this.playerSockets.get(client.id);
-        if (!roomId) {
-            client.emit('roomStatus', { inRoom: false });
-            return;
-        }
-        const room = this.gameRooms.get(roomId);
-        if (!room) {
-            client.emit('roomStatus', { inRoom: false });
-            return;
-        }
-        client.emit('roomStatus', {
-            inRoom: true,
-            roomId: roomId,
-            status: room.status,
-            players: room.players.length,
-            playersList: room.players
-        });
-    }
-    handleGameTransaction(client, payload) {
-        const roomId = this.playerSockets.get(client.id);
-        if (!roomId) {
-            client.emit('transactionProcessed', {
-                success: false,
-                error: 'No estás en una sala de juego',
-                message: 'Transacción no procesada: No estás en una sala de juego'
-            });
-            return;
-        }
-        const room = this.gameRooms.get(roomId);
-        if (!room) {
-            client.emit('transactionProcessed', {
-                success: false,
-                error: 'Sala no encontrada',
-                message: 'Transacción no procesada: Sala no encontrada'
-            });
-            return;
-        }
-        if (room.status !== 'playing') {
-            client.emit('transactionProcessed', {
-                success: false,
-                error: 'El juego no está activo',
-                message: 'Transacción no procesada: El juego no está activo'
-            });
-            return;
-        }
-        const isValid = this.validateTransaction(payload);
-        const companyName = this.getCompanyName(payload.companyId);
-        if (isValid) {
-            try {
-                const success = this.processTransaction(roomId, client.id, payload.type, payload.companyId, payload.quantity);
-                if (success) {
-                    const portfolio = this.getPlayerPortfolio(roomId, client.id);
-                    client.emit('portfolioUpdate', portfolio);
-                    const availableStocks = this.getAvailableStocks(roomId);
-                    this.server.to(roomId).emit('stocksUpdate', availableStocks);
-                    this.server.to(roomId).emit('transactionProcessed', {
-                        success: true,
-                        playerId: payload.userId,
-                        type: payload.type,
-                        companyName: companyName,
-                        companySymbol: this.getCompanySymbol(payload.companyId),
-                        quantity: payload.quantity,
-                        priceAtMoment: this.getStockPrice(payload.companyId),
-                        message: `Transacción procesada exitosamente`
-                    });
-                }
-                else {
-                    client.emit('transactionProcessed', {
-                        success: false,
-                        playerId: payload.userId,
-                        error: 'Fondos insuficientes o acciones no disponibles',
-                        message: `Transacción no procesada: Fondos insuficientes`
-                    });
-                }
-            }
-            catch (error) {
-                client.emit('transactionProcessed', {
-                    success: false,
-                    playerId: payload.userId,
-                    error: 'Error al procesar la transacción',
-                    message: `Transacción no procesada: Error del servidor`
-                });
-            }
-        }
-        else {
-            const errorMessage = this.getTransactionError(payload);
-            client.emit('transactionProcessed', {
-                success: false,
-                playerId: payload.userId,
-                error: errorMessage,
-                message: `Transacción no procesada: ${errorMessage}`
-            });
-        }
-    }
-    validateTransaction(payload) {
-        if (!payload.type || !payload.quantity || !payload.companyId) {
-            return false;
-        }
-        return payload.quantity > 0;
-    }
-    getTransactionError(payload) {
-        if (!payload.type || !payload.quantity || !payload.companyId) {
-            return 'Datos de transacción incompletos';
-        }
-        if (payload.quantity <= 0) {
-            return 'La cantidad debe ser mayor a 0';
-        }
-        return 'Transacción no válida';
-    }
-    getCompanyName(companyId) {
-        const companies = {
-            1: 'MichiPapeles',
-            2: 'MichiHotel',
-            3: 'MichiAgro',
-            4: 'MichiTech',
-            5: 'MichiFuel',
-            6: 'MichiHealth'
-        };
-        return companies[companyId] ?? 'Empresa Desconocida';
-    }
-    getCompanySymbol(companyId) {
-        const symbols = {
-            1: 'MPA',
-            2: 'MHT',
-            3: 'MAG',
-            4: 'MTC',
-            5: 'MFL',
-            6: 'MHL'
-        };
-        return symbols[companyId] ?? 'N/A';
-    }
-    processTransaction(roomId, socketId, type, companyId, quantity) {
-        const roomPortfolios = this.playerPortfolios.get(roomId);
-        const roomStocks = this.companyStocks.get(roomId);
-        if (!roomPortfolios || !roomStocks) {
-            console.log(`No portfolios or stocks found for room ${roomId}`);
-            return false;
-        }
-        const playerPortfolio = roomPortfolios.get(socketId);
-        if (!playerPortfolio) {
-            console.log(`No portfolio found for socket ${socketId} in room ${roomId}`);
-            return false;
-        }
-        console.log(`Processing ${type} transaction for socket ${socketId}: ${quantity} shares of company ${companyId}`);
-        console.log(`Player cash: $${playerPortfolio.cash}, Available stocks: ${roomStocks.get(companyId)}`);
-        const stockPrice = this.getStockPrice(companyId);
-        const totalCost = stockPrice * quantity;
-        if (type === 'BUY') {
-            console.log(`Buy validation: Cash $${playerPortfolio.cash} >= Cost $${totalCost}? ${playerPortfolio.cash >= totalCost}`);
-            console.log(`Stocks validation: Available ${roomStocks.get(companyId)} >= Quantity ${quantity}? ${roomStocks.get(companyId) >= quantity}`);
-            if (playerPortfolio.cash < totalCost || roomStocks.get(companyId) < quantity) {
-                console.log(`Transaction failed: Insufficient funds or stocks`);
-                return false;
-            }
-            playerPortfolio.cash -= totalCost;
-            const currentStocks = playerPortfolio.stocks.get(companyId) || 0;
-            playerPortfolio.stocks.set(companyId, currentStocks + quantity);
-            roomStocks.set(companyId, roomStocks.get(companyId) - quantity);
-            console.log(`Buy successful: Player now has $${playerPortfolio.cash} cash and ${playerPortfolio.stocks.get(companyId)} shares of company ${companyId}`);
-        }
-        else if (type === 'SELL') {
-            const currentStocks = playerPortfolio.stocks.get(companyId) || 0;
-            if (currentStocks < quantity) {
-                return false;
-            }
-            playerPortfolio.cash += totalCost;
-            playerPortfolio.stocks.set(companyId, currentStocks - quantity);
-            roomStocks.set(companyId, roomStocks.get(companyId) + quantity);
-        }
-        return true;
-    }
-    getStockPrice(companyId) {
-        if (!this.currentPrices.has(companyId)) {
-            const basePrices = {
-                1: 80.00,
-                2: 100.00,
-                3: 70.00,
-                4: 90.00,
-                5: 110.00,
-                6: 85.00
-            };
-            this.currentPrices.set(companyId, basePrices[companyId] || 50.00);
-        }
-        return this.currentPrices.get(companyId) || 50.00;
-    }
-    updateStockPrices(priceChanges) {
-        for (const [companyId, change] of Object.entries(priceChanges)) {
-            const newPrice = change.newPrice;
-            this.currentPrices.set(parseInt(companyId), newPrice);
-            console.log(`Updated price for company ${companyId}: $${newPrice.toFixed(2)}`);
-        }
-    }
-    updateAllPortfolios(roomId) {
-        const roomPortfolios = this.playerPortfolios.get(roomId);
-        if (!roomPortfolios)
-            return;
-        for (const [socketId] of roomPortfolios) {
-            const updatedPortfolio = this.getPlayerPortfolio(roomId, socketId);
-            if (updatedPortfolio) {
-                console.log(`Sending updated portfolio to socket ${socketId}: Cash $${updatedPortfolio.cash}, Portfolio $${updatedPortfolio.portfolioValue}, Total $${updatedPortfolio.totalValue}`);
-                this.server.to(socketId).emit('portfolioUpdate', updatedPortfolio);
-            }
-        }
-    }
-    getPlayerPortfolio(roomId, socketId) {
-        const roomPortfolios = this.playerPortfolios.get(roomId);
-        if (!roomPortfolios) {
-            console.log(`No room portfolios found for room ${roomId}`);
-            return null;
-        }
-        const portfolio = roomPortfolios.get(socketId);
-        if (!portfolio) {
-            console.log(`No portfolio found for socket ${socketId} in room ${roomId}`);
-            return null;
-        }
-        const room = this.gameRooms.get(roomId);
-        const stage = room?.currentRound ?? 0;
-        const holdings = Array.from(portfolio.stocks.entries()).map(([companyId, quantity]) => {
-            const currentPrice = this.getStockPrice(companyId);
-            return {
-                stockId: companyId,
-                symbol: this.getCompanySymbol(companyId),
-                name: this.getCompanyName(companyId),
-                quantity,
-                currentPrice,
-                totalValue: currentPrice * quantity
-            };
-        });
-        const portfolioValue = holdings.reduce((total, holding) => total + holding.totalValue, 0);
-        const fixedIncomeHoldings = this.getPlayerFixedIncome(roomId, socketId);
-        const fixedIncomeValue = this.getFixedIncomeValue(roomId, socketId);
-        const result = {
-            cash: portfolio.cash,
-            holdings,
-            fixedIncomeHoldings: fixedIncomeHoldings.map((bond) => ({
-                offerId: bond.offerId,
-                issuer: bond.issuer,
-                name: bond.name,
-                unitPrice: bond.unitPrice,
-                interestRate: bond.interestRate,
-                remainingMonths: bond.remainingMonths,
-                quantity: bond.quantity,
-                currentValue: bond.unitPrice * bond.quantity,
-            })),
-            portfolioValue,
-            stage,
-            fixedIncomeValue,
-            totalValue: portfolio.cash + portfolioValue + fixedIncomeValue
-        };
-        console.log(`Portfolio for socket ${socketId}: Cash $${result.cash}, Portfolio $${result.portfolioValue}, Total $${result.totalValue}`);
-        return result;
-    }
-    getAvailableStocks(roomId) {
-        const roomStocks = this.companyStocks.get(roomId);
-        if (!roomStocks) {
-            console.log(`No room stocks found for room ${roomId}`);
-            return {};
-        }
-        const stocks = {};
-        for (const [companyId, quantity] of roomStocks) {
-            stocks[companyId] = quantity;
-            console.log(`Company ${companyId}: ${quantity} available stocks`);
-        }
-        console.log(`Sending stocks update for room ${roomId}:`, stocks);
-        return stocks;
-    }
-    findAvailableRoom() {
-        for (const room of this.gameRooms.values()) {
-            if ((room.status === 'playing' || room.status === 'starting') && room.players.length < 5) {
-                return room;
-            }
-        }
-        for (const room of this.gameRooms.values()) {
-            if (room.status === 'waiting' && room.players.length < 5) {
-                return room;
-            }
-        }
-        for (const room of this.gameRooms.values()) {
-            if (room.status === 'playing' || room.status === 'starting') {
-                return room;
-            }
-        }
-        return null;
     }
     createNewRoom() {
         const roomId = `room_${Date.now()}`;
@@ -718,22 +652,12 @@ let WsGateway = class WsGateway {
             roundStartTime: null,
             createdAt: Date.now(),
             fixedIncomeOffers: [],
+            totalElapsedSeconds: 0,
+            gameClockInterval: undefined
         };
         this.gameRooms.set(roomId, room);
         this.roomCodes.set(roomCode, roomId);
         return room;
-    }
-    startGameCountdown(room) {
-        let countdown = 10;
-        room.status = 'starting';
-        const countdownInterval = setInterval(() => {
-            this.server.to(room.id).emit('gameStartCountdown', countdown);
-            countdown--;
-            if (countdown < 0) {
-                clearInterval(countdownInterval);
-                this.startGame(room);
-            }
-        }, 1000);
     }
     startGame(room) {
         room.status = 'playing';
@@ -753,6 +677,11 @@ let WsGateway = class WsGateway {
             }
         }
         this.server.to(room.id).emit('gameStarted');
+        room.totalElapsedSeconds = 0;
+        room.gameClockInterval = setInterval(() => {
+            room.totalElapsedSeconds += 1;
+            this.server.to(room.id).emit('gameTimer', room.totalElapsedSeconds);
+        }, 1000);
         this.startRound(room);
     }
     startRound(room) {
@@ -774,12 +703,14 @@ let WsGateway = class WsGateway {
         }
         const news = this.generateRoundNews();
         room.currentNews = news;
-        this.server.to(room.id).emit('roundStarted', {
+        const payload = {
             round: room.currentRound,
-            news: news,
+            news,
             timer: room.roundTimer,
-            fixedIncomeOffers: room.fixedIncomeOffers
-        });
+            fixedIncomeOffers: room.fixedIncomeOffers,
+            totalElapsedSeconds: room.totalElapsedSeconds,
+        };
+        this.server.to(room.id).emit('roundStarted', payload);
         room.roundInterval = setInterval(() => {
             room.roundTimer--;
             this.server.to(room.id).emit('roundTimer', room.roundTimer);
@@ -795,10 +726,11 @@ let WsGateway = class WsGateway {
         this.updateStockPrices(priceChanges);
         this.processFixedIncomeHoldings(room);
         this.updateAllPortfolios(room.id);
-        this.server.to(room.id).emit('roundEnded', {
+        const payload = {
             round: room.currentRound,
-            priceChanges: priceChanges
-        });
+            priceChanges,
+        };
+        this.server.to(room.id).emit('roundEnded', payload);
         if (room.currentRound < 5) {
             room.currentRound++;
             setTimeout(() => this.startRound(room), 5000);
@@ -809,6 +741,10 @@ let WsGateway = class WsGateway {
     }
     endGame(room) {
         room.status = 'finished';
+        if (room.gameClockInterval) {
+            clearInterval(room.gameClockInterval);
+            room.gameClockInterval = undefined;
+        }
         const results = this.calculateFinalResults(room);
         this.latestGameResults = { roomId: room.id, results };
         this.server.to(room.id).emit('gameFinished', results);
@@ -839,17 +775,17 @@ let WsGateway = class WsGateway {
         if (specialEvent) {
             return this.applySpecialEvent(companyIds, specialEvent);
         }
-        companyIds.forEach(companyId => {
+        companyIds.forEach((companyId) => {
             const change = (Math.random() - 0.5) * 0.2;
             const oldPrice = this.getStockPrice(companyId);
             const newPrice = oldPrice * (1 + change);
             changes[companyId] = {
-                oldPrice: oldPrice,
-                newPrice: newPrice,
-                change: change,
-                eventType: 'normal'
+                oldPrice,
+                newPrice,
+                change,
+                eventType: 'normal',
             };
-            console.log(`Price change for company ${companyId}: $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)} (${(change * 100).toFixed(1)}%)`);
+            this.dlog(`Price change for company ${companyId}: $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)} (${(change * 100).toFixed(1)}%)`);
         });
         return changes;
     }
@@ -938,6 +874,131 @@ let WsGateway = class WsGateway {
             .sort((a, b) => b.finalValue - a.finalValue)
             .map((player, index) => ({ ...player, rank: index + 1 }));
     }
+    getCompanyName(companyId) {
+        const companies = {
+            1: 'MichiPapeles',
+            2: 'MichiHotel',
+            3: 'MichiAgro',
+            4: 'MichiTech',
+            5: 'MichiFuel',
+            6: 'MichiHealth'
+        };
+        return companies[companyId] ?? `Empresa ${companyId}`;
+    }
+    getCompanySymbol(companyId) {
+        const symbols = {
+            1: 'MPA',
+            2: 'MHT',
+            3: 'MAG',
+            4: 'MTC',
+            5: 'MFL',
+            6: 'MHL'
+        };
+        return symbols[companyId] ?? `${companyId}`;
+    }
+    getStockPrice(companyId) {
+        if (!this.currentPrices.has(companyId)) {
+            const basePrices = {
+                1: 80.0,
+                2: 100.0,
+                3: 70.0,
+                4: 90.0,
+                5: 110.0,
+                6: 85.0,
+            };
+            this.currentPrices.set(companyId, basePrices[companyId] || 50.0);
+        }
+        return this.currentPrices.get(companyId) || 50.0;
+    }
+    updateStockPrices(priceChanges) {
+        for (const [companyId, change] of Object.entries(priceChanges)) {
+            const payload = change;
+            this.currentPrices.set(parseInt(companyId, 10), payload.newPrice);
+            this.dlog(`Updated price for company ${companyId}: $${payload.newPrice.toFixed(2)}`);
+        }
+    }
+    getPlayerPortfolio(roomId, socketId) {
+        const roomPortfolios = this.playerPortfolios.get(roomId);
+        if (!roomPortfolios) {
+            this.dlog(`No room portfolios found for room ${roomId}`);
+            return null;
+        }
+        const portfolio = roomPortfolios.get(socketId);
+        if (!portfolio) {
+            this.dlog(`No portfolio found for socket ${socketId} in room ${roomId}`);
+            return null;
+        }
+        const room = this.gameRooms.get(roomId);
+        const stage = room?.currentRound ?? 0;
+        const holdings = Array.from(portfolio.stocks.entries()).map(([companyId, quantity]) => {
+            const currentPrice = this.getStockPrice(companyId);
+            return {
+                stockId: companyId,
+                symbol: this.getCompanySymbol(companyId),
+                name: this.getCompanyName(companyId),
+                quantity,
+                currentPrice,
+                totalValue: currentPrice * quantity
+            };
+        });
+        const portfolioValue = holdings.reduce((total, holding) => total + holding.totalValue, 0);
+        const fixedIncomeHoldings = this.getPlayerFixedIncome(roomId, socketId);
+        const fixedIncomeValue = this.getFixedIncomeValue(roomId, socketId);
+        const result = {
+            cash: portfolio.cash,
+            holdings,
+            fixedIncomeHoldings: fixedIncomeHoldings.map((bond) => ({
+                offerId: bond.offerId,
+                issuer: bond.issuer,
+                name: bond.name,
+                unitPrice: bond.unitPrice,
+                interestRate: bond.interestRate,
+                remainingMonths: bond.remainingMonths,
+                quantity: bond.quantity,
+                currentValue: bond.unitPrice * bond.quantity,
+            })),
+            portfolioValue,
+            stage,
+            fixedIncomeValue,
+            totalValue: portfolio.cash + portfolioValue + fixedIncomeValue
+        };
+        this.dlog(`Portfolio for socket ${socketId}: Cash $${result.cash}, Portfolio $${result.portfolioValue}, Total $${result.totalValue}`);
+        return result;
+    }
+    updateAllPortfolios(roomId) {
+        const roomPortfolios = this.playerPortfolios.get(roomId);
+        if (!roomPortfolios)
+            return;
+        for (const [socketId] of roomPortfolios) {
+            const updatedPortfolio = this.getPlayerPortfolio(roomId, socketId);
+            if (updatedPortfolio) {
+                this.dlog(`Sending updated portfolio to socket ${socketId}: Cash $${updatedPortfolio.cash}, Portfolio $${updatedPortfolio.portfolioValue}, Total $${updatedPortfolio.totalValue}`);
+                this.server.to(socketId).emit('portfolioUpdate', updatedPortfolio);
+            }
+        }
+    }
+    scheduleFixedIncomeOffersUpdate(roomId) {
+        if (this.fixedIncomeOffersUpdateTimers.has(roomId))
+            return;
+        const timer = setTimeout(() => {
+            this.fixedIncomeOffersUpdateTimers.delete(roomId);
+            const offers = this.roomFixedIncomeOffers.get(roomId) ?? [];
+            this.server.to(roomId).emit('fixedIncomeOffersUpdate', offers);
+        }, 100);
+        this.fixedIncomeOffersUpdateTimers.set(roomId, timer);
+    }
+    startGameCountdown(room) {
+        let countdown = 10;
+        room.status = 'starting';
+        const countdownInterval = setInterval(() => {
+            this.server.to(room.id).emit('gameStartCountdown', countdown);
+            countdown--;
+            if (countdown < 0) {
+                clearInterval(countdownInterval);
+                this.startGame(room);
+            }
+        }, 1000);
+    }
     getLatestResults() {
         return this.latestGameResults?.results ?? [];
     }
@@ -950,7 +1011,7 @@ let WsGateway = class WsGateway {
             return;
         room.players = room.players.filter(p => p.socketId !== client.id);
         this.playerSockets.delete(client.id);
-        this.server.to(roomId).emit('playersUpdate', room.players);
+        this.server.to(roomId).emit('playersUpdate', this.mapPlayersForClient(room.players));
         if (room.players.length === 0) {
             this.gameRooms.delete(roomId);
         }
@@ -983,11 +1044,29 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], WsGateway.prototype, "handlePurchaseFixedIncome", null);
 __decorate([
+    (0, websockets_1.SubscribeMessage)('gameTransaction'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [socket_io_1.Socket, Object]),
+    __metadata("design:returntype", void 0)
+], WsGateway.prototype, "handleGameTransaction", null);
+__decorate([
+    (0, websockets_1.SubscribeMessage)('bulkGameTransactions'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [socket_io_1.Socket, Object]),
+    __metadata("design:returntype", void 0)
+], WsGateway.prototype, "handleBulkGameTransactions", null);
+__decorate([
     (0, websockets_1.SubscribeMessage)('requestRoundState'),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [socket_io_1.Socket]),
     __metadata("design:returntype", void 0)
 ], WsGateway.prototype, "handleRequestRoundState", null);
+__decorate([
+    (0, websockets_1.SubscribeMessage)('checkRoomStatus'),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [socket_io_1.Socket]),
+    __metadata("design:returntype", void 0)
+], WsGateway.prototype, "handleCheckRoomStatus", null);
 __decorate([
     (0, websockets_1.SubscribeMessage)('createRoom'),
     __metadata("design:type", Function),
@@ -1000,24 +1079,6 @@ __decorate([
     __metadata("design:paramtypes", [socket_io_1.Socket, Object]),
     __metadata("design:returntype", void 0)
 ], WsGateway.prototype, "handleJoinRoom", null);
-__decorate([
-    (0, websockets_1.SubscribeMessage)('joinWaitingRoom'),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [socket_io_1.Socket, Object]),
-    __metadata("design:returntype", void 0)
-], WsGateway.prototype, "handleJoinWaitingRoom", null);
-__decorate([
-    (0, websockets_1.SubscribeMessage)('checkRoomStatus'),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [socket_io_1.Socket]),
-    __metadata("design:returntype", void 0)
-], WsGateway.prototype, "handleCheckRoomStatus", null);
-__decorate([
-    (0, websockets_1.SubscribeMessage)('gameTransaction'),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [socket_io_1.Socket, Object]),
-    __metadata("design:returntype", void 0)
-], WsGateway.prototype, "handleGameTransaction", null);
 exports.WsGateway = WsGateway = __decorate([
     (0, websockets_1.WebSocketGateway)({ cors: {
             origin: 'http://localhost:5173',

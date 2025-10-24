@@ -4,6 +4,7 @@ import { useAuth } from '../store/useAuth'
 import { useSocket } from '../hooks/useSocket'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
+import type { RoundStatePayload } from 'server/types/game-events'
 
 interface Player {
   id: number
@@ -68,7 +69,7 @@ export default function WaitingRoom() {
       nav('/game')
     })
 
-    socket.on('roomStatus', (data: any) => {
+    socket.on('roomStatus', (data: { inRoom: boolean; playersList?: Player[] }) => {
       if (!data.inRoom) {
         nav('/')
       } else {
@@ -86,7 +87,26 @@ export default function WaitingRoom() {
       }
     })
 
-    socket.on('playerJoined', (data: any) => {
+    socket.on('roundState', (data: RoundStatePayload) => {
+      if (data.status === 'playing') {
+        nav('/game')
+        return
+      }
+
+      if (data.status === 'starting') {
+        setGameStatus('starting')
+        setIsGameStarting(true)
+        setGameTimer(data.timer ?? 0)
+      } else {
+        setGameStatus('waiting')
+        setIsGameStarting(false)
+        if (typeof data.timer === 'number') {
+          setGameTimer(data.timer)
+        }
+      }
+    })
+
+    socket.on('playerJoined', (data: { players: Player[] }) => {
       setPlayers(data.players)
       if (data.players.length === 5) {
         setGameStatus('ready')
@@ -100,6 +120,7 @@ export default function WaitingRoom() {
       socket.off('gameStartCountdown')
       socket.off('gameStarted')
       socket.off('roomStatus')
+      socket.off('roundState')
       socket.off('playerJoined')
       socket.off('connect')
     }
