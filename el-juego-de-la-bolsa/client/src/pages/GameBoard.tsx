@@ -804,6 +804,12 @@ export default function GameBoard() {
                 ${playerState.portfolioValue.toFixed(2)}
               </span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400">Renta fija:</span>
+              <span className="text-amber-300 font-semibold">
+                ${(playerState.fixedIncomeValue ?? 0).toFixed(2)}
+              </span>
+            </div>
             <div className="flex justify-between border-t border-slate-600 pt-1">
               <span className="text-white font-semibold">Total:</span>
               <span className="text-blue-400 font-bold">

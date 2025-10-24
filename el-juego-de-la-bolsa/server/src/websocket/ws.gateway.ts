@@ -76,6 +76,19 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
   private fixedIncomeOffersUpdateTimers: Map<string, NodeJS.Timeout> = new Map();
   private currentPrices: Map<number, number> = new Map();
 
+  private mapPlayerForClient(player: Player) {
+    return {
+      id: player.id,
+      name: player.name,
+      isReady: player.isReady,
+      characterId: player.characterId,
+    };
+  }
+
+  private mapPlayersForClient(players: Player[]) {
+    return players.map(player => this.mapPlayerForClient(player));
+  }
+
   private readonly fixedIncomeTemplates: Array<Omit<FixedIncomeOffer, 'remainingUnits'>> = [
     {
       id: 'ZAIMELLA',
@@ -529,6 +542,30 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     });
   }
 
+  @SubscribeMessage('checkRoomStatus')
+  handleCheckRoomStatus(client: Socket) {
+    const roomId = this.playerSockets.get(client.id);
+    if (!roomId) {
+      client.emit('roomStatus', { inRoom: false });
+      return;
+    }
+
+    const room = this.gameRooms.get(roomId);
+    if (!room) {
+      this.playerSockets.delete(client.id);
+      client.emit('roomStatus', { inRoom: false });
+      return;
+    }
+
+    client.emit('roomStatus', {
+      inRoom: true,
+      roomId,
+      status: room.status,
+      players: room.players.length,
+      playersList: this.mapPlayersForClient(room.players),
+    });
+  }
+
   handleConnection(client: Socket) {
     // Verificar si es una reconexión
     const reconnectionInfo = this.playerReconnections.get(client.id);
@@ -559,7 +596,8 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
         inRoom: true, 
         roomId: reconnectionInfo.roomId, 
         status: room.status,
-        players: room.players.length 
+        players: room.players.length,
+        playersList: this.mapPlayersForClient(room.players)
       });
       
       // Si el juego ya está en progreso, enviar el estado actual
@@ -682,6 +720,9 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
       client.emit('portfolioUpdate', initialPortfolio);
     }
 
+    const publicPlayers = this.mapPlayersForClient(room.players);
+    this.server.to(roomId).emit('playersUpdate', publicPlayers);
+
     client.emit('roomCreated', { 
       roomCode, 
       players: room.players,
@@ -751,11 +792,14 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     }
 
     // Notificar a todos los jugadores
+    const publicPlayers = this.mapPlayersForClient(room.players);
     this.server.to(roomId).emit('playerJoined', {
-      player,
-      players: room.players,
+      player: this.mapPlayerForClient(player),
+      players: publicPlayers,
       message: `${playerName} se unió a la sala`
     });
+
+    this.server.to(roomId).emit('playersUpdate', publicPlayers);
 
     // Si la sala está llena, iniciar countdown
     if (room.players.length === 5) {
@@ -1212,7 +1256,7 @@ export class WsGateway implements OnModuleInit, OnGatewayConnection, OnGatewayDi
     this.playerSockets.delete(client.id);
 
     // Notificar a otros jugadores
-    this.server.to(roomId).emit('playersUpdate', room.players);
+    this.server.to(roomId).emit('playersUpdate', this.mapPlayersForClient(room.players));
 
     // Si no quedan jugadores, eliminar sala
     if (room.players.length === 0) {

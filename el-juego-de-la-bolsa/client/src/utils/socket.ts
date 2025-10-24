@@ -17,7 +17,7 @@ class SocketManager {
     if (!this.socket) {
       console.log('Creating new socket connection...')
       // Usar variable de entorno o localhost por defecto
-      const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000'
+      const serverUrl = (import.meta as any).env?.VITE_SERVER_URL || 'http://localhost:3000'
       
       this.socket = io(serverUrl, {
         transports: ['websocket', 'polling'],
