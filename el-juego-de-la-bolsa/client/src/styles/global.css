@@ -4,3 +4,105 @@
 
 html, body, #root { height: 100%; }
 body { @apply bg-slate-900 text-white; }
+
+/* Animaciones de estrellas fugaces */
+@keyframes shooting-star-1 {
+  0% {
+    transform: translateX(-200px) translateY(calc(100vh + 200px));
+    opacity: 0;
+  }
+  2% {
+    opacity: 1;
+  }
+  98% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(calc(100vw + 200px)) translateY(-200px);
+    opacity: 0;
+  }
+}
+
+@keyframes shooting-star-2 {
+  0% {
+    transform: translateX(-300px) translateY(calc(100vh + 300px));
+    opacity: 0;
+  }
+  3% {
+    opacity: 1;
+  }
+  97% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(calc(100vw + 300px)) translateY(-300px);
+    opacity: 0;
+  }
+}
+
+@keyframes shooting-star-3 {
+  0% {
+    transform: translateX(-400px) translateY(calc(100vh + 400px));
+    opacity: 0;
+  }
+  4% {
+    opacity: 1;
+  }
+  96% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(calc(100vw + 400px)) translateY(-400px);
+    opacity: 0;
+  }
+}
+
+.shooting-star {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: radial-gradient(circle, #ffffff 0%, #60a5fa 50%, #3b82f6 100%);
+  border-radius: 50%;
+  box-shadow: 0 0 10px #60a5fa, 0 0 20px #3b82f6, 0 0 30px #1d4ed8;
+}
+
+.shooting-star::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 80px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, #60a5fa 50%, #ffffff 100%);
+  transform: translate(-50%, -50%) rotate(-45deg);
+  transform-origin: center;
+  box-shadow: 0 0 6px #60a5fa;
+}
+
+.shooting-star::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 60px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, #60a5fa 70%, #ffffff 100%);
+  transform: translate(-50%, -50%) rotate(-45deg);
+  transform-origin: center;
+  box-shadow: 0 0 4px #60a5fa;
+}
+
+.shooting-star-1 {
+  animation: shooting-star-1 2s linear infinite;
+  animation-delay: 0s;
+}
+
+.shooting-star-2 {
+  animation: shooting-star-2 2.5s linear infinite;
+  animation-delay: 0.3s;
+}
+
+.shooting-star-3 {
+  animation: shooting-star-3 3s linear infinite;
+  animation-delay: 0.6s;
+}

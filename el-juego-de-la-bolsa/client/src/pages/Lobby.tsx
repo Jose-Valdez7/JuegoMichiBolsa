@@ -158,9 +158,26 @@ export default function Lobby() {
           filter: 'blur(5px)'
         }}
       ></div>
+
+      {/* Estrellas fugaces animadas */}
+      <div className="absolute inset-0 pointer-events-none z-0">
+        {/* Estrellas distribuidas por toda la pantalla */}
+        <div className="shooting-star shooting-star-1" style={{ top: '5%', left: '0%' }}></div>
+        <div className="shooting-star shooting-star-2" style={{ top: '15%', left: '5%' }}></div>
+        <div className="shooting-star shooting-star-3" style={{ top: '25%', left: '10%' }}></div>
+        <div className="shooting-star shooting-star-1" style={{ top: '35%', left: '15%' }}></div>
+        <div className="shooting-star shooting-star-2" style={{ top: '45%', left: '20%' }}></div>
+        <div className="shooting-star shooting-star-3" style={{ top: '55%', left: '25%' }}></div>
+        <div className="shooting-star shooting-star-1" style={{ top: '65%', left: '30%' }}></div>
+        <div className="shooting-star shooting-star-2" style={{ top: '75%', left: '35%' }}></div>
+        <div className="shooting-star shooting-star-3" style={{ top: '85%', left: '40%' }}></div>
+        <div className="shooting-star shooting-star-1" style={{ top: '10%', left: '45%' }}></div>
+        <div className="shooting-star shooting-star-2" style={{ top: '20%', left: '50%' }}></div>
+        <div className="shooting-star shooting-star-3" style={{ top: '30%', left: '55%' }}></div>
+      </div>
         {/* Card para pantalla inicial */}
         {!gameMode && (
-          <div className="bg-slate-800/80 backdrop-blur-xl rounded-3xl shadow-2xl max-w-6xl w-full overflow-hidden relative border-2 border-slate-600">
+          <div className="bg-slate-800/80 backdrop-blur-xl rounded-3xl shadow-2xl max-w-6xl w-full overflow-hidden relative border-2 border-slate-600 z-10">
             {/* Layout dividido en dos mitades sin gap */}
             <div className="flex flex-col lg:flex-row min-h-[600px]">
               {/* Mitad izquierda - Imagen ocupando toda la mitad */}
@@ -221,7 +238,7 @@ export default function Lobby() {
 
         {/* Card para crear partida */}
         {gameMode === 'create' && (
-          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative z-10">
             <div className="space-y-4 relative z-[99999]">
             <div className="relative z-[99999] bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
               <label className="block text-white font-medium mb-2">Tu Nombre</label>
@@ -339,7 +356,7 @@ export default function Lobby() {
 
         {/* Card para unirse a partida */}
         {gameMode === 'join' && (
-          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative">
+          <div className="bg-slate-800/90 backdrop-blur-lg rounded-3xl p-8 max-w-7xl w-full border-2 border-slate-600 shadow-2xl relative z-10">
             <div className="space-y-4 relative z-[99999]">
             <div className="relative z-[99999] bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
               <label className="block text-white font-medium mb-2">Tu Nombre</label>
@@ -447,7 +464,7 @@ export default function Lobby() {
 
         {error && (
           <div
-            className="bg-red-900/30 border border-red-500 text-red-300 px-4 py-3 rounded-lg text-sm"
+            className="bg-red-900/30 border border-red-500 text-red-300 px-4 py-3 rounded-lg text-sm relative z-10"
           >
             {error}
           </div>
