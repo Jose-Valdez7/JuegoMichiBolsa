@@ -391,6 +391,21 @@ export default function GameBoard() {
       event: 'gameFinished',
       handler: (results: any) => {
         debugLog('Game finished:', results)
+        try {
+          if (typeof window !== 'undefined' && Array.isArray(results)) {
+            sessionStorage.setItem('latestGameResults', JSON.stringify(results))
+            sessionStorage.setItem(
+              'latestGameStats',
+              JSON.stringify({
+                totalRounds: TOTAL_ROUNDS,
+                participants: results.length,
+                finishedAt: new Date().toISOString()
+              })
+            )
+          }
+        } catch (storageError) {
+          console.error('Error storing latest results:', storageError)
+        }
         showSystemNotification('¡Juego terminado! Calculando resultados finales...')
         setIsGameRunning(false)
         setTimeout(() => {

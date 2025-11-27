@@ -14,46 +14,123 @@ interface PlayerResult {
   portfolioValue?: number
 }
 
+interface GameStats {
+  totalRounds: number
+  duration: string
+  participants: number
+}
+
 export default function Results() {
   const { user } = useAuth()
   const socket = useSocket()
   const [results, setResults] = useState<PlayerResult[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [gameStats, setGameStats] = useState({
+  const [gameStats, setGameStats] = useState<GameStats>({
     totalRounds: 5,
     duration: '5:00',
     participants: 5
   })
 
-  useEffect(() => {
-    loadResults()
-    
-    if (socket) {
-      socket.on('gameFinished', (gameResults: PlayerResult[]) => {
-        setResults(gameResults)
-        setIsLoading(false)
-      })
+  const persistResults = (resultsToStore: PlayerResult[], statsOverrides: Partial<GameStats> = {}) => {
+    if (typeof window === 'undefined') return
+    try {
+      sessionStorage.setItem('latestGameResults', JSON.stringify(resultsToStore))
+      sessionStorage.setItem(
+        'latestGameStats',
+        JSON.stringify({
+          ...gameStats,
+          ...statsOverrides,
+          participants: statsOverrides.participants ?? resultsToStore.length
+        })
+      )
+    } catch (error) {
+      console.error('Error saving latest results:', error)
     }
-  }, [socket])
+  }
+
+  const loadStoredResults = () => {
+    if (typeof window === 'undefined') return false
+    try {
+      const storedResults = sessionStorage.getItem('latestGameResults')
+      if (storedResults) {
+        const parsedResults: PlayerResult[] = JSON.parse(storedResults)
+        if (Array.isArray(parsedResults) && parsedResults.length > 0) {
+          setResults(parsedResults)
+
+          const storedStats = sessionStorage.getItem('latestGameStats')
+          if (storedStats) {
+            const parsedStats: Partial<GameStats> = JSON.parse(storedStats)
+            setGameStats((prev) => ({
+              totalRounds: parsedStats.totalRounds ?? prev.totalRounds,
+              duration: parsedStats.duration ?? prev.duration,
+              participants: parsedStats.participants ?? parsedResults.length
+            }))
+          } else {
+            setGameStats((prev) => ({ ...prev, participants: parsedResults.length }))
+          }
+
+          return true
+        }
+      }
+    } catch (error) {
+      console.error('Error loading stored results:', error)
+    }
+    return false
+  }
+
+  const updateResultsFromSource = (gameResults: PlayerResult[]) => {
+    if (!Array.isArray(gameResults) || gameResults.length === 0) return
+    setResults(gameResults)
+    setGameStats((prev) => ({
+      ...prev,
+      participants: gameResults.length
+    }))
+    persistResults(gameResults, { participants: gameResults.length })
+    setIsLoading(false)
+  }
 
   const loadResults = async () => {
     try {
       const { data } = await api.get('/game/results')
-      setResults(data)
+      if (Array.isArray(data) && data.length > 0) {
+        updateResultsFromSource(data)
+        return
+      }
     } catch (error) {
       console.error('Error loading results:', error)
       // Datos de fallback para testing
-      setResults([
+      const fallback = [
         { playerId: 1, playerName: 'Jugador 1', finalValue: 15420.50, rank: 1 },
         { playerId: 2, playerName: 'Jugador 2', finalValue: 14890.25, rank: 2 },
         { playerId: 3, playerName: 'Jugador 3', finalValue: 13750.80, rank: 3 },
         { playerId: 4, playerName: 'Jugador 4', finalValue: 12100.40, rank: 4 },
         { playerId: 5, playerName: 'Jugador 5', finalValue: 11200.15, rank: 5 }
-      ])
+      ]
+      updateResultsFromSource(fallback)
     } finally {
       setIsLoading(false)
     }
   }
+
+  useEffect(() => {
+    const hasStoredResults = loadStoredResults()
+    if (!hasStoredResults) {
+      loadResults()
+    } else {
+      setIsLoading(false)
+    }
+    
+    if (socket) {
+      const handleGameFinished = (gameResults: PlayerResult[]) => {
+        updateResultsFromSource(gameResults)
+      }
+
+      socket.on('gameFinished', handleGameFinished)
+      return () => {
+        socket.off('gameFinished', handleGameFinished)
+      }
+    }
+  }, [socket])
 
   const getRankIcon = (rank: number) => {
     switch (rank) {
